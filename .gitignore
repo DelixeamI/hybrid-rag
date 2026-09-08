@@ -1,0 +1,28 @@
+# Python / tooling
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+*.egg-info/
+dist/
+
+# Secrets and local state: never commit
+.env
+.pgdata/
+*.log
+
+# Raw downloads (the corpus file data/raw/tk_rf.txt itself IS committed)
+data/raw/.cache/
+
+# Golden drafts: only the human-reviewed data/golden.jsonl belongs in the repository
+data/golden.draft.jsonl
+data/golden.draft.jsonl.orig
+
+# Internal planning / tracking documents
+PLAN.md
+PROGRESS.md
+QUESTIONS.md
+
