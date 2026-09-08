@@ -1,0 +1,6 @@
+# Floors for the CI gate (`make eval`, dataset: fixture, pipeline: hybrid + rerank).
+# Set below the first honest run (Recall@5 100%, correct refusals 100%) to leave room for
+# float noise between CPUs. The fixture has only 16 answerable and 4 no_answer questions:
+# one lost question moves these numbers by 6% and 25%.
+recall_at_5: 0.90
+correct_refusal_rate: 0.75

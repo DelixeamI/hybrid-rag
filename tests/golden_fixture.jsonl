@@ -1,0 +1,20 @@
+{"id": "f01", "question": "Сколько календарных дней длится ежегодный основной оплачиваемый отпуск?", "expected_articles": ["115"], "answer_facts": ["28 календарных дней"], "type": "factual"}
+{"id": "f02", "question": "За сколько времени нужно предупредить работодателя о расторжении трудового договора по инициативе работника?", "expected_articles": ["80"], "answer_facts": ["две недели"], "type": "factual"}
+{"id": "f03", "question": "Какой минимальной продолжительности должна быть хотя бы одна из частей разделенного ежегодного отпуска?", "expected_articles": ["125"], "answer_facts": ["14 календарных дней"], "type": "factual"}
+{"id": "f04", "question": "Какова продолжительность отпуска по беременности и родам до родов?", "expected_articles": ["255"], "answer_facts": ["70 календарных дней"], "type": "factual"}
+{"id": "f05", "question": "В какой срок работодатель обязан произвести выплату всех сумм при увольнении?", "expected_articles": ["140"], "answer_facts": ["в день увольнения"], "type": "factual"}
+{"id": "f06", "question": "На какой максимальный срок сохраняется средний месячный заработок на период трудоустройства при сокращении штата?", "expected_articles": ["178"], "answer_facts": ["двух месяцев"], "type": "factual"}
+{"id": "f07", "question": "За какое время до начала отпуска работник должен быть извещен о его начале?", "expected_articles": ["123"], "answer_facts": ["две недели"], "type": "factual"}
+{"id": "p01", "question": "сколько можно не выходить на работу после рождения ребенка", "expected_articles": ["255"], "answer_facts": ["70 календарных дней"], "type": "paraphrase"}
+{"id": "p02", "question": "можно ли уволить человека пока он на больничном", "expected_articles": ["81"], "answer_facts": ["не допускается"], "type": "paraphrase"}
+{"id": "p03", "question": "могу ли я получить деньги вместо части отпуска", "expected_articles": ["126"], "answer_facts": ["денежной компенсацией"], "type": "paraphrase"}
+{"id": "p04", "question": "сколько дней отдыха положено в год", "expected_articles": ["115"], "answer_facts": ["28 календарных дней"], "type": "paraphrase"}
+{"id": "p05", "question": "когда мне должны заплатить все деньги если меня выгоняют с работы", "expected_articles": ["140"], "answer_facts": ["в день увольнения"], "type": "paraphrase"}
+{"id": "p06", "question": "если заболел во время отпуска он сгорает или переносится", "expected_articles": ["124"], "answer_facts": ["продлен"], "type": "paraphrase"}
+{"id": "m01", "question": "Можно ли уволить работника в период отпуска и когда выплачивается окончательный расчет?", "expected_articles": ["81", "140"], "answer_facts": ["не допускается", "в день увольнения"], "type": "multi_article"}
+{"id": "m02", "question": "Можно ли разделить отпуск на части и заменить часть отпуска деньгами?", "expected_articles": ["125", "126"], "answer_facts": ["14 календарных дней", "денежной компенсацией"], "type": "multi_article"}
+{"id": "m03", "question": "За сколько предупреждать об увольнении по собственному желанию и какие вообще есть основания прекращения трудового договора?", "expected_articles": ["80", "77"], "answer_facts": ["две недели"], "type": "multi_article"}
+{"id": "n01", "question": "Какой налог платит работодатель с заработной платы работника?", "expected_articles": [], "answer_facts": [], "type": "no_answer"}
+{"id": "n02", "question": "Как оформить ипотеку на покупку квартиры?", "expected_articles": [], "answer_facts": [], "type": "no_answer"}
+{"id": "n03", "question": "Какой штраф положен за превышение скорости на дороге?", "expected_articles": [], "answer_facts": [], "type": "no_answer"}
+{"id": "n04", "question": "Как получить загранический паспорт?", "expected_articles": [], "answer_facts": [], "type": "no_answer"}

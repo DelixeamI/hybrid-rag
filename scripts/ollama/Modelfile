@@ -1,0 +1,7 @@
+# Same weights as qwen2.5:14b, but with an 8k context window and greedy decoding.
+# Why: Ollama's OpenAI-compatible endpoint cannot set num_ctx per request, and the default 2048
+# tokens would silently cut the beginning of our prompt (system rules + first fragments).
+# Create once with: ollama create tkrag-qwen2.5-14b -f scripts/ollama/Modelfile
+FROM qwen2.5:14b
+PARAMETER num_ctx 8192
+PARAMETER temperature 0
