@@ -37,17 +37,19 @@ def evaluate_mode(retriever: Retriever, items: list[GoldenItem], mode: Mode) -> 
         result = retriever.retrieve(item.question, mode, top_k=max(KS))
         ranked = ranked_articles(result.hits)
         expected = set(item.expected_articles)
-        row = {f"recall@{k}": recall_at_k(ranked, expected, k) for k in KS}
-        row["mrr"] = reciprocal_rank(ranked, expected)
+        need_all = item.needs_all_articles
+        row = {f"recall@{k}": recall_at_k(ranked, expected, k, need_all) for k in KS}
+        row["mrr"] = reciprocal_rank(ranked, expected, need_all)
         rows.append(row)
-        first = next((n for n, a in enumerate(ranked, start=1) if a in expected), None)
         per_question.append(
             {
                 "id": item.id,
                 "type": item.type,
                 "question": item.question,
                 "expected": sorted(expected),
-                "first_hit_rank": first,
+                "need_all": need_all,
+                "recall@5": row["recall@5"],
+                "missing_in_top5": sorted(expected - set(ranked[:5])) if need_all else [],
                 "top": ranked[:5],
             }
         )

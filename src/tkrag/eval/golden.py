@@ -21,6 +21,11 @@ class GoldenItem(BaseModel):
     answer_facts: list[str]
     type: QuestionType
 
+    @property
+    def needs_all_articles(self) -> bool:
+        """multi_article: every expected article is required; elsewhere they are alternatives."""
+        return self.type == "multi_article"
+
     @field_validator("expected_articles", mode="before")
     @classmethod
     def _as_strings(cls, value: object) -> object:
@@ -63,6 +68,16 @@ def validate_items(items: list[GoldenItem], known_articles: set[str] | None = No
                 if number not in known_articles:
                     errors.append(f"{item.id}: article {number} is not in the indexed corpus")
     return GoldenIssues(errors)
+
+
+def overlap_errors(items: list[GoldenItem], other: list[GoldenItem]) -> list[str]:
+    """A test set must not repeat a question of the set that was used to tune the system."""
+    seen = {" ".join(i.question.lower().split()): i.id for i in other}
+    return [
+        f"{i.id}: the same question as {seen[key]} in the other set"
+        for i in items
+        if (key := " ".join(i.question.lower().split())) in seen
+    ]
 
 
 def validate_quotas(

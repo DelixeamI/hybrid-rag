@@ -62,3 +62,22 @@ def test_tsquery_is_or_of_unique_words_and_safe() -> None:
     assert build_tsquery("Сколько дней отпуска? отпуска") == "сколько | дней | отпуска"
     assert build_tsquery("a'; DROP TABLE chunks; --") == "drop | table | chunks"
     assert build_tsquery("?!") == ""
+
+
+def test_multi_article_needs_every_required_article() -> None:
+    # The question needs articles 115 and 125; the search found only 115.
+    ranked = ["115", "7", "80"]
+    expected = {"115", "125"}
+    assert recall_at_k(ranked, expected, 5) == 1.0  # alternatives: any one counts (old behaviour)
+    assert recall_at_k(ranked, expected, 5, need_all=True) == 0.5  # required: half an answer
+    assert recall_at_k(["115", "125"], expected, 1, need_all=True) == 0.5
+    assert recall_at_k(["125", "7", "115"], expected, 5, need_all=True) == 1.0
+    assert recall_at_k(ranked, set(), 5, need_all=True) == 0.0
+
+
+def test_multi_article_reciprocal_rank_is_the_rank_of_the_last_required_article() -> None:
+    expected = {"115", "125"}
+    assert reciprocal_rank(["115", "125"], expected, need_all=True) == 0.5
+    assert reciprocal_rank(["115", "7", "125"], expected, need_all=True) == pytest.approx(1 / 3)
+    assert reciprocal_rank(["115", "7", "80"], expected, need_all=True) == 0.0  # 125 missing
+    assert reciprocal_rank(["115", "7", "125"], expected) == 1.0  # alternatives: first hit

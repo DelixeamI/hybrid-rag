@@ -111,3 +111,27 @@ def test_dense_search_is_not_starved_by_other_documents(
     result = small.retrieve("ежегодный основной оплачиваемый отпуск", "dense", top_k=10)
     assert len(result.hits) == 10
     assert result.hits[0].article_number == "115"
+
+
+def test_bm25_cache_reuses_the_index_and_rebuilds_after_a_re_ingest(
+    conn: psycopg.Connection, fixture_path: Path, tmp_path: Path, hash_embedder: HashEmbedder
+) -> None:
+    from tkrag.retrieval.bm25 import Bm25Cache, query_lexemes
+
+    ingest(conn, fixture_path, "test-cache", hash_embedder)
+    cache = Bm25Cache("test-cache")
+    first = cache.get(conn)
+    assert cache.get(conn) is first  # unchanged corpus: the same object, no reload
+    version = cache.version
+
+    edited = tmp_path / "edition2.txt"
+    edited.write_text(
+        fixture_path.read_text(encoding="utf-8") + "\nСтатья 999. Новая\n\nУникальноеслово.\n",
+        encoding="utf-8",
+    )
+    ingest(conn, edited, "test-cache", hash_embedder)  # a new edition replaces the chunks
+    rebuilt = cache.get(conn)
+    assert rebuilt is not first and cache.version != version
+    lexemes = query_lexemes(conn, "Уникальноеслово")  # the stemmed form Postgres stores
+    assert rebuilt.search(lexemes, 5)  # the new article is searchable now
+    assert not first.search(lexemes, 5)  # the stale index could not see it

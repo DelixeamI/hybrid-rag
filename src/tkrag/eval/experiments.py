@@ -98,12 +98,13 @@ def score_ranking(
     for p in prepared:
         ranked = articles_of(make_ranking(p), article_of)
         expected = set(p.item.expected_articles)
+        need_all = p.item.needs_all_articles
         rows.append(
             {
-                "recall@1": recall_at_k(ranked, expected, 1),
-                "recall@5": recall_at_k(ranked, expected, 5),
-                "recall@20": recall_at_k(ranked, expected, 20),
-                "mrr": reciprocal_rank(ranked, expected),
+                "recall@1": recall_at_k(ranked, expected, 1, need_all),
+                "recall@5": recall_at_k(ranked, expected, 5, need_all),
+                "recall@20": recall_at_k(ranked, expected, 20, need_all),
+                "mrr": reciprocal_rank(ranked, expected, need_all),
             }
         )
     out = {key: mean([r[key] for r in rows]) for key in rows[0]} if rows else {}
