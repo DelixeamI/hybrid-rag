@@ -8,6 +8,7 @@ for one code (about 700 chunks) and is the thing to replace (pg_search, Elastics
 """
 
 import math
+import threading
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -74,3 +75,35 @@ def query_lexemes(conn: psycopg.Connection, question: str) -> list[str]:
     """Lexemes of the question after Postgres stemming and stop-word removal."""
     rows = conn.execute("SELECT lexeme FROM unnest(to_tsvector('russian', %s))", (question,))
     return [str(r[0]) for r in rows.fetchall()]
+
+
+def document_version(conn: psycopg.Connection, document: str) -> int | None:
+    """Id of the newest stored edition. A re-ingest inserts a new row, so the id changes."""
+    row = conn.execute("SELECT max(id) FROM documents WHERE name = %s", (document,)).fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+class Bm25Cache:
+    """One shared BM25 index that rebuilds itself when the corpus is re-ingested.
+
+    A long-running API process would otherwise keep ranking with the index it built at startup
+    after `ingest` replaced the chunks in the database. Each request checks one cheap query.
+    """
+
+    def __init__(self, document: str) -> None:
+        self._document = document
+        self._index: Bm25Index | None = None
+        self._version: int | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def version(self) -> int | None:
+        return self._version
+
+    def get(self, conn: psycopg.Connection) -> Bm25Index:
+        current = document_version(conn, self._document)
+        with self._lock:
+            if self._index is None or current != self._version:
+                self._index = load_bm25(conn, self._document)
+                self._version = current
+            return self._index

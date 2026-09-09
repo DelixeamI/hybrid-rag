@@ -11,12 +11,13 @@ from tkrag.datasets import Dataset, get_dataset
 from tkrag.db import connect, prepare_connection
 from tkrag.generation.answerer import Answerer
 from tkrag.generation.schemas import AskResult
-from tkrag.retrieval.bm25 import load_bm25
+from tkrag.retrieval.bm25 import Bm25Cache
 
 
 def build_service(settings: Settings, dataset: Dataset) -> Service:
     with connect(settings.database_url) as startup_conn:  # applies migrations once
-        bm25 = load_bm25(startup_conn, dataset.document)  # in-memory index, shared by requests
+        bm25_cache = Bm25Cache(dataset.document)  # in-memory index; rebuilt after a re-ingest
+        bm25_cache.get(startup_conn)
     pool = ConnectionPool(
         settings.database_url,
         min_size=1,
@@ -30,6 +31,7 @@ def build_service(settings: Settings, dataset: Dataset) -> Service:
 
     def ask(question: str) -> AskResult:
         with pool.connection() as conn:
+            bm25 = bm25_cache.get(conn)
             retriever = make_retriever(conn, settings, dataset.document, embedder, reranker, bm25)
             answerer = Answerer(retriever, llm, settings.refusal_threshold, settings.context_chunks)
             return answerer.ask(question)
@@ -46,6 +48,7 @@ def build_service(settings: Settings, dataset: Dataset) -> Service:
             "status": "ok" if chunks else "empty",
             "document": dataset.document,
             "chunks": chunks,
+            "index_version": bm25_cache.version,
             "llm_model": llm.model,
         }
 

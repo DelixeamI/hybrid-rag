@@ -7,6 +7,7 @@ from typing import Protocol
 
 
 class Embedder(Protocol):
+    name: str  # identifies the model; part of the index fingerprint
     dim: int
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]: ...
@@ -21,6 +22,7 @@ class SentenceTransformerEmbedder:
         from sentence_transformers import SentenceTransformer
 
         self._model = SentenceTransformer(model_name)
+        self.name = model_name
         self.dim = dim
 
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
@@ -49,6 +51,7 @@ class HashEmbedder:
     """Bag-of-words hashing embedder for tests. Not semantic: only word overlap matters."""
 
     def __init__(self, dim: int = 384) -> None:
+        self.name = f"hash-{dim}"
         self.dim = dim
 
     def _embed(self, text: str) -> list[float]:

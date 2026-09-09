@@ -3,7 +3,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from tkrag.ingest.loader import ingest
+from tkrag.ingest.loader import IndexMismatchError, ingest
 from tkrag.retrieval.embedder import HashEmbedder
 
 pytestmark = pytest.mark.db
@@ -84,3 +84,51 @@ def test_ingest_is_visible_to_other_connections(
     report = ingest(conn, fixture_path, "test-commit", hash_embedder)
     with psycopg.connect(Settings().database_url) as other:
         assert count(other, "test-commit") == report.chunks > 0
+
+
+class NamedEmbedder(HashEmbedder):
+    """Same vectors as HashEmbedder under another model name."""
+
+    def __init__(self, name: str, dim: int = 384) -> None:
+        super().__init__(dim)
+        self.name = name
+
+
+def test_a_different_embedding_model_rebuilds_the_index(
+    conn: psycopg.Connection, fixture_path: Path
+) -> None:
+    first = ingest(conn, fixture_path, "test-model", NamedEmbedder("model-a"))
+    again = ingest(conn, fixture_path, "test-model", NamedEmbedder("model-a"))
+    switched = ingest(conn, fixture_path, "test-model", NamedEmbedder("model-b"))
+    assert not first.skipped and again.skipped
+    assert not switched.skipped and switched.rebuilt  # same file, new model: not skipped
+    assert count(conn, "test-model") == switched.chunks
+    assert "rebuilt" in switched.summary()
+
+
+def test_other_chunk_size_rebuilds_the_index(
+    conn: psycopg.Connection, fixture_path: Path, hash_embedder: HashEmbedder
+) -> None:
+    small = ingest(conn, fixture_path, "test-size", hash_embedder, max_tokens=60)
+    large = ingest(conn, fixture_path, "test-size", hash_embedder, max_tokens=500)
+    assert not large.skipped and large.rebuilt
+    assert small.chunks > large.chunks  # smaller limit, more pieces
+    assert count(conn, "test-size") == large.chunks
+
+
+def test_an_index_without_a_fingerprint_is_rebuilt_once(
+    conn: psycopg.Connection, fixture_path: Path, hash_embedder: HashEmbedder
+) -> None:
+    ingest(conn, fixture_path, "test-legacy", hash_embedder)
+    conn.execute("UPDATE documents SET index_fingerprint = NULL WHERE name = 'test-legacy'")
+    conn.commit()  # what rows ingested before the fingerprint column look like
+    assert not ingest(conn, fixture_path, "test-legacy", hash_embedder).skipped
+    assert ingest(conn, fixture_path, "test-legacy", hash_embedder).skipped
+
+
+def test_an_embedder_of_another_dimension_fails_with_a_clear_message(
+    conn: psycopg.Connection, fixture_path: Path
+) -> None:
+    with pytest.raises(IndexMismatchError, match=r"384-dimensional.*produces 128"):
+        ingest(conn, fixture_path, "test-dim", HashEmbedder(dim=128))
+    assert count(conn, "test-dim") == 0  # nothing half-written
