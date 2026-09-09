@@ -86,6 +86,7 @@ def run_full(
     reranker: Reranker,
     llm: LLMClient,
     thresholds: dict[str, float] | None = None,
+    frozen: bool = False,
 ) -> dict[str, Any]:
     """Retrieval eval + answer eval (+ CI gate when thresholds are given)."""
     results = run_retrieval(conn, dataset, settings, embedder, reranker)
@@ -93,9 +94,12 @@ def run_full(
     retriever = make_retriever(conn, settings, dataset.document, embedder, reranker)
     answerer = Answerer(retriever, llm, settings.refusal_threshold, settings.context_chunks)
     results["answers"] = evaluate_answers(answerer, items, llm.model, settings.refusal_threshold)
-    scored = [(i["type"] == "no_answer", i["best_score"]) for i in results["answers"]["items"]]
-    calibration = calibrate_threshold(scored)
-    results["calibration"] = {"chosen": calibration.threshold, "curve": calibration.curve}
+    if frozen:  # a test set must not be used to pick anything, not even a suggested threshold
+        results["frozen"] = True
+    else:
+        scored = [(i["type"] == "no_answer", i["best_score"]) for i in results["answers"]["items"]]
+        calibration = calibrate_threshold(scored)
+        results["calibration"] = {"chosen": calibration.threshold, "curve": calibration.curve}
     if thresholds is not None:
         results["gate"] = check_gate(results, thresholds)
     return results

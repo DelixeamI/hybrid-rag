@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/DelixeamI/hybrid-rag/ci.yml?branch=main&label=CI&logo=github)](https://github.com/DelixeamI/hybrid-rag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-yellowgreen.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.12-blue.svg)](pyproject.toml)
-[![tests](https://img.shields.io/badge/tests-130-brightgreen.svg)](tests)
+[![tests](https://img.shields.io/badge/tests-141-brightgreen.svg)](tests)
 
 Сервис отвечает на вопросы по Трудовому кодексу обычным языком: коротко, со ссылками на статью, часть и цитату, либо честно отказывает, если в кодексе ответа нет. Главное в проекте не чат, а оценка: Recall@k, MRR, доля верных отказов и проверка, что каждое число в ответе есть в процитированном тексте.
 
@@ -32,6 +32,13 @@ flowchart LR
 
 Таблицы генерирует `make eval`, из `reports/*.json` их копирует `scripts/update_readme.py`. Руками здесь не написано ни одной цифры.
 
+**Как читать метрики.**
+
+- **Recall@k и MRR** считаются по статьям. Если у вопроса несколько подходящих статей (`expected_articles` как альтернативы), он найден, когда в топ-k есть любая из них. Для вопросов типа `multi_article` нужны все указанные статьи: Recall@k там доля найденных, а MRR берётся по рангу последней нужной статьи (если какой-то нет, ноль). Найти только 115 из {115, 125} — это половина ответа, не успех.
+- **«Подтверждённые ответы»** — это синтаксическая проверка (grounding): числа с единицами, номера статей и цитаты ответа есть в процитированном тексте. Это не доля юридически верных ответов: подтверждённый ответ может сделать неверный вывод из верной статьи. И считается она только среди ответов, которые система дала, а не среди всех вопросов.
+- **`answer_facts` recall** — лексическое совпадение с ожидаемыми фактами (слова и числа после грубого стемминга), не оценка смысла.
+- **Верные отказы** зависят от порога, подобранного на этом же golden. Честную оценку даёт только набор, по которому ничего не подбиралось: см. «Независимый test set».
+
 ### Настоящий кодекс
 
 Ответы для настоящего кодекса сгенерировала локальная модель (`qwen2.5:14b` через Ollama), кассеты лежат в `tests/cassettes/full/`. Выборка небольшая: один вопрос двигает метрики на несколько процентов.
@@ -43,23 +50,29 @@ Dataset `full`: 534 articles, 710 chunks, 92 questions (`golden.jsonl`). Full re
 
 | Mode | Recall@1 | Recall@5 | Recall@10 | MRR | latency p50, ms | latency p95, ms |
 |---|---|---|---|---|---|---|
-| Postgres FTS (ts_rank_cd) | 21.1% | 42.1% | 50.0% | 0.287 | 9.2 | 122.1 |
-| BM25 (Postgres lexemes) | 50.0% | 80.3% | 84.2% | 0.622 | 3.0 | 4.2 |
-| dense (e5) | 75.0% | 84.2% | 92.1% | 0.795 | 20.5 | 27.4 |
-| hybrid (dense + BM25, RRF) | 73.7% | 90.8% | 90.8% | 0.799 | 23.4 | 29.6 |
-| hybrid + rerank | 86.8% | 93.4% | 94.7% | 0.898 | 404.1 | 466.3 |
+| Postgres FTS (ts_rank_cd) | 19.7% | 39.5% | 46.1% | 0.251 | 10.8 | 139.3 |
+| BM25 (Postgres lexemes) | 46.1% | 77.6% | 82.9% | 0.551 | 3.7 | 5.5 |
+| dense (e5) | 69.1% | 80.3% | 88.8% | 0.696 | 23.4 | 31.2 |
+| hybrid (dense + BM25, RRF) | 71.1% | 84.9% | 88.8% | 0.727 | 27.7 | 33.5 |
+| hybrid + rerank | 80.3% | 90.8% | 92.8% | 0.816 | 397.6 | 476.2 |
 
 LLM: `tkrag-qwen2.5-14b`; refusal threshold (reranker score): 0.0066
 
 | Metric | Value | n |
 |---|---|---|
 | Correct refusals on `no_answer` | 100% | 16 |
-| False refusals on answerable questions | 1.3% | 76 |
-| `answer_facts` recall (answerable, refusals count as 0; prepositions ignored) | 73.9% | 76 |
-| `answer_facts` recall, strict (also demands prepositions and conjunctions) | 71.9% | 76 |
-| Answers with every number and article confirmed by citations | 92.0% | 75 |
+| False refusals on answerable questions | 0% | 76 |
+| `answer_facts` recall (answerable, refusals count as 0; prepositions ignored) | 73.2% | 76 |
+| `answer_facts` recall, strict (also demands prepositions and conjunctions) | 71.3% | 76 |
+| Grounded answers: numbers, articles and quotes are in the cited text (share of the answers given, not of all questions) | 93.4% | 76 |
 
-Outcome statuses: ok=69, refused=17, unverified=6
+Outcome statuses: ok=71, refused=16, unverified=5
+
+**How to read these numbers.**
+
+- *Grounded answers* is a syntactic check: the numbers with units, the article numbers and the quotes of the answer occur in the cited fragments. It is not the share of legally correct answers; a grounded answer can still draw a wrong conclusion from the right article. It also counts only the answers that were given.
+- *`answer_facts` recall* is lexical overlap with the expected facts (words and numbers after a crude stemming). It misses a correct answer in other words and can accept a wrong answer that contains the same words.
+- *Correct refusals* depend on a threshold that was chosen on this same golden set, so they are optimistic for new questions. Only a set that was not used to choose any parameter or threshold gives an honest estimate (see `eval --frozen` in the README).
 <!-- METRICS:END -->
 
 ### Смоук-тест для CI (синтетическая фикстура)
@@ -71,11 +84,11 @@ Dataset `fixture`: 20 articles, 20 chunks, 20 questions (`golden_fixture.jsonl`)
 
 | Mode | Recall@1 | Recall@5 | Recall@10 | MRR | latency p50, ms | latency p95, ms |
 |---|---|---|---|---|---|---|
-| Postgres FTS (ts_rank_cd) | 37.5% | 81.2% | 81.2% | 0.544 | 2.3 | 3.8 |
-| BM25 (Postgres lexemes) | 56.2% | 81.2% | 81.2% | 0.640 | 1.1 | 1.8 |
-| dense (e5) | 93.8% | 100% | 100% | 0.958 | 13.8 | 69.5 |
-| hybrid (dense + BM25, RRF) | 81.2% | 87.5% | 100% | 0.850 | 14.8 | 25.7 |
-| hybrid + rerank | 100% | 100% | 100% | 1.000 | 193.1 | 207.8 |
+| Postgres FTS (ts_rank_cd) | 28.1% | 78.1% | 78.1% | 0.390 | 0.9 | 3.0 |
+| BM25 (Postgres lexemes) | 50.0% | 78.1% | 81.2% | 0.567 | 0.6 | 0.8 |
+| dense (e5) | 84.4% | 96.9% | 100% | 0.844 | 12.2 | 90.0 |
+| hybrid (dense + BM25, RRF) | 78.1% | 96.9% | 100% | 0.802 | 12.4 | 16.4 |
+| hybrid + rerank | 90.6% | 100% | 100% | 0.896 | 186.1 | 202.8 |
 
 LLM: `gemini-3.8-flash`; refusal threshold (reranker score): 0.003
 
@@ -85,9 +98,15 @@ LLM: `gemini-3.8-flash`; refusal threshold (reranker score): 0.003
 | False refusals on answerable questions | 0% | 16 |
 | `answer_facts` recall (answerable, refusals count as 0; prepositions ignored) | 100% | 16 |
 | `answer_facts` recall, strict (also demands prepositions and conjunctions) | 100% | 16 |
-| Answers with every number and article confirmed by citations | 100% | 16 |
+| Grounded answers: numbers, articles and quotes are in the cited text (share of the answers given, not of all questions) | 100% | 16 |
 
 Outcome statuses: ok=16, refused=4
+
+**How to read these numbers.**
+
+- *Grounded answers* is a syntactic check: the numbers with units, the article numbers and the quotes of the answer occur in the cited fragments. It is not the share of legally correct answers; a grounded answer can still draw a wrong conclusion from the right article. It also counts only the answers that were given.
+- *`answer_facts` recall* is lexical overlap with the expected facts (words and numbers after a crude stemming). It misses a correct answer in other words and can accept a wrong answer that contains the same words.
+- *Correct refusals* depend on a threshold that was chosen on this same golden set, so they are optimistic for new questions. Only a set that was not used to choose any parameter or threshold gives an honest estimate (see `eval --frozen` in the README).
 <!-- CI-METRICS:END -->
 
 ## Запуск за минуту
@@ -146,6 +165,35 @@ make eval DATASET=full                 # повтор с кассет, отчё�
 ```
 
 Метрики ответов по настоящему кодексу в [reports/results_full.md](reports/results_full.md) получены на другой модели, чем фикстурные, поэтому с таблицей смоук-теста их сравнивать нельзя.
+
+### Независимый test set
+
+Параметры гибрида (k, вес dense) и порог отказа подобраны на `data/golden.jsonl`, поэтому метрики на нём оптимистичны. Чтобы получить честную оценку, нужен второй набор, который не использовался ни для выбора параметров, ни для порога (рекомендуется 100–200 вопросов). Заготовка процесса:
+
+1. Черновик по статьям, которых нет в первом наборе (нужна LLM; например, локальный Ollama):
+
+   ```bash
+   uv run python scripts/draft_golden.py --exclude data/golden.jsonl --out data/golden_test.draft.jsonl --clusters 20 --pairs 20 --no-answer 30 --seed 21
+   ```
+
+2. Проверь все строки вручную, как для первого набора, и сохрани как `data/golden_test.jsonl`.
+3. Проверка структуры и повторов вопросов относительно первого набора:
+
+   ```bash
+   uv run tkrag golden-check --dataset full --golden data/golden_test.jsonl --against data/golden.jsonl
+   ```
+
+4. Запись кассет и оценка с зафиксированными параметрами (никаких подборов после просмотра результата):
+
+   ```bash
+   uv run tkrag record --dataset full --golden data/golden_test.jsonl --stem results_test --frozen
+   ```
+
+   ```bash
+   uv run tkrag eval --dataset full --golden data/golden_test.jsonl --stem results_test --frozen
+   ```
+
+Отчёт попадёт в `reports/results_test.md` с пометкой «frozen test set» и без калибровки порога. Если результат плох, это и есть результат: параметры после этого можно менять только вместе с новым, ещё не использованным тестовым набором.
 
 ### API
 

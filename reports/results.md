@@ -4,45 +4,45 @@ Dataset: **fixture** — 20 articles, 20 chunks, 20 questions (`golden_fixture.j
 
 > The `fixture` corpus is SYNTHETIC: a few dozen hand-written approximations of articles. These numbers check that the pipeline works; they say nothing about quality on the real Labor Code. Small n: one question moves a percentage by several points.
 
-Embeddings `intfloat/multilingual-e5-small`, reranker `BAAI/bge-reranker-v2-m3`, RRF k=60 (dense weight 3), rerank top-20 -> top-5. Hit = at least one expected article among the top-k distinct articles.
+Embeddings `intfloat/multilingual-e5-small`, reranker `BAAI/bge-reranker-v2-m3`, RRF k=10 (dense weight 3), rerank top-20 -> top-5. Recall@k: a question counts as found when ANY expected article is among the top-k distinct articles (alternatives); for `multi_article` it is the SHARE of the required articles found, and MRR uses the rank where the last required article appears.
 
 ## Retrieval
 
 | Mode | Recall@1 | Recall@5 | Recall@10 | MRR | latency p50, ms | latency p95, ms |
 |---|---|---|---|---|---|---|
-| Postgres FTS (ts_rank_cd) | 37.5% | 81.2% | 81.2% | 0.544 | 2.3 | 3.8 |
-| BM25 (Postgres lexemes) | 56.2% | 81.2% | 81.2% | 0.640 | 1.1 | 1.8 |
-| dense (e5) | 93.8% | 100% | 100% | 0.958 | 13.8 | 69.5 |
-| hybrid (dense + BM25, RRF) | 81.2% | 87.5% | 100% | 0.850 | 14.8 | 25.7 |
-| hybrid + rerank | 100% | 100% | 100% | 1.000 | 193.1 | 207.8 |
+| Postgres FTS (ts_rank_cd) | 28.1% | 78.1% | 78.1% | 0.390 | 0.9 | 3.0 |
+| BM25 (Postgres lexemes) | 50.0% | 78.1% | 81.2% | 0.567 | 0.6 | 0.8 |
+| dense (e5) | 84.4% | 96.9% | 100% | 0.844 | 12.2 | 90.0 |
+| hybrid (dense + BM25, RRF) | 78.1% | 96.9% | 100% | 0.802 | 12.4 | 16.4 |
+| hybrid + rerank | 90.6% | 100% | 100% | 0.896 | 186.1 | 202.8 |
 
 **Recall@1 by question type**
 
 | Type | n | Postgres FTS (ts_rank_cd) | BM25 (Postgres lexemes) | dense (e5) | hybrid (dense + BM25, RRF) | hybrid + rerank |
 |---|---|---|---|---|---|---|
 | factual | 7 | 42.9% | 100% | 100% | 100% | 100% |
-| multi_article | 3 | 100% | 66.7% | 100% | 100% | 100% |
-| paraphrase | 6 | 0% | 0% | 83.3% | 50.0% | 100% |
+| multi_article | 3 | 50.0% | 33.3% | 50.0% | 50.0% | 50.0% |
+| paraphrase | 6 | 0% | 0% | 83.3% | 66.7% | 100% |
 
 **Recall@5 by question type**
 
 | Type | n | Postgres FTS (ts_rank_cd) | BM25 (Postgres lexemes) | dense (e5) | hybrid (dense + BM25, RRF) | hybrid + rerank |
 |---|---|---|---|---|---|---|
 | factual | 7 | 100% | 100% | 100% | 100% | 100% |
-| multi_article | 3 | 100% | 100% | 100% | 100% | 100% |
-| paraphrase | 6 | 50.0% | 50.0% | 100% | 66.7% | 100% |
+| multi_article | 3 | 83.3% | 83.3% | 83.3% | 83.3% | 100% |
+| paraphrase | 6 | 50.0% | 50.0% | 100% | 100% | 100% |
 
 **MRR by question type**
 
 | Type | n | Postgres FTS (ts_rank_cd) | BM25 (Postgres lexemes) | dense (e5) | hybrid (dense + BM25, RRF) | hybrid + rerank |
 |---|---|---|---|---|---|---|
 | factual | 7 | 0.714 | 1.000 | 1.000 | 1.000 | 1.000 |
-| multi_article | 3 | 1.000 | 0.778 | 1.000 | 1.000 | 1.000 |
-| paraphrase | 6 | 0.117 | 0.150 | 0.889 | 0.600 | 1.000 |
+| multi_article | 3 | 0.178 | 0.389 | 0.389 | 0.389 | 0.444 |
+| paraphrase | 6 | 0.117 | 0.150 | 0.889 | 0.778 | 1.000 |
 
 ### Misses
 
-Questions with no expected article in the top 5 of `hybrid_rerank`: 0 of 16.
+Questions not fully found in the top 5 of `hybrid_rerank` (nothing found, or for `multi_article` at least one required article missing): 0 of 16.
 
 ## Answers
 
@@ -54,9 +54,15 @@ LLM: `gemini-3.8-flash`; refusal threshold (reranker score): 0.003
 | False refusals on answerable questions | 0% | 16 |
 | `answer_facts` recall (answerable, refusals count as 0; prepositions ignored) | 100% | 16 |
 | `answer_facts` recall, strict (also demands prepositions and conjunctions) | 100% | 16 |
-| Answers with every number and article confirmed by citations | 100% | 16 |
+| Grounded answers: numbers, articles and quotes are in the cited text (share of the answers given, not of all questions) | 100% | 16 |
 
 Outcome statuses: ok=16, refused=4
+
+**How to read these numbers.**
+
+- *Grounded answers* is a syntactic check: the numbers with units, the article numbers and the quotes of the answer occur in the cited fragments. It is not the share of legally correct answers; a grounded answer can still draw a wrong conclusion from the right article. It also counts only the answers that were given.
+- *`answer_facts` recall* is lexical overlap with the expected facts (words and numbers after a crude stemming). It misses a correct answer in other words and can accept a wrong answer that contains the same words.
+- *Correct refusals* depend on a threshold that was chosen on this same golden set, so they are optimistic for new questions. Only a set that was not used to choose any parameter or threshold gives an honest estimate (see `eval --frozen` in the README).
 
 ## Refusal threshold
 

@@ -1,6 +1,10 @@
 """Propose draft golden questions with the configured LLM -> data/golden.draft.jsonl.
 
 Usage: uv run python scripts/draft_golden.py [--dataset fixture|full] [--clusters 11] [--seed 7]
+       [--exclude data/golden.jsonl] [--out data/golden_test.draft.jsonl]
+
+For an independent TEST set pass --exclude with the golden set used for tuning: the drafted
+questions then cover only articles that set never mentions.
 
 Samples `clusters` chapters (always including the vacation and termination chapters), takes
 3 consecutive articles from each: 2 questions per article, multi-article questions over
@@ -18,6 +22,7 @@ from pathlib import Path
 from tkrag.config import get_settings
 from tkrag.datasets import get_dataset
 from tkrag.eval.draft import draft_golden
+from tkrag.eval.golden import load_golden
 from tkrag.ingest.parser import Article, live_articles, parse_articles, read_text
 from tkrag.llm import LLMClient, OpenAICompatibleLLM
 from tkrag.llm.openai_compat import LLMError
@@ -80,11 +85,21 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--models", nargs="*", default=list(DEFAULT_MODELS))
     parser.add_argument("--out", type=Path, default=Path("data/golden.draft.jsonl"))
+    parser.add_argument(
+        "--exclude",
+        type=Path,
+        nargs="*",
+        default=[],
+        help="golden sets whose expected articles must not be used",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
     dataset = get_dataset(args.dataset, settings)
     articles = live_articles(parse_articles(read_text(dataset.corpus_path)))
+    used = {a for path in args.exclude for i in load_golden(path) for a in i.expected_articles}
+    articles = [a for a in articles if a.number not in used]
+    print(f"{len(used)} article(s) excluded; {len(articles)} left to sample from")
     clusters = pick_clusters(articles, args.clusters, args.seed)
     picked = [a for cluster in clusters for a in cluster]
     neighbours = [(c[i], c[i + 1]) for c in clusters for i in range(CLUSTER_SIZE - 1)]

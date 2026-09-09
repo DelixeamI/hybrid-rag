@@ -58,3 +58,21 @@ def test_facts_that_are_not_in_the_article_are_dropped() -> None:
     assert [i.question for i in result.items if i.type == "factual"] == ["ok"]
     assert len(result.dropped) >= 3
     assert any("invented" in d for d in result.dropped)
+
+
+def test_overlap_errors_flag_repeated_questions_only() -> None:
+    from tkrag.eval.golden import GoldenItem, overlap_errors
+
+    def item(ident: str, question: str) -> GoldenItem:
+        return GoldenItem(
+            id=ident,
+            question=question,
+            expected_articles=["1"],
+            answer_facts=["x"],
+            type="factual",
+        )
+
+    tuned = [item("a1", "Сколько дней отпуска?"), item("a2", "Кто платит?")]
+    test = [item("t1", "  сколько  ДНЕЙ отпуска? "), item("t2", "Совсем другой вопрос?")]
+    assert overlap_errors(test, tuned) == ["t1: the same question as a1 in the other set"]
+    assert overlap_errors([item("t2", "Совсем другой вопрос?")], tuned) == []

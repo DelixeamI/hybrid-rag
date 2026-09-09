@@ -63,13 +63,10 @@ def _misses_section(
     """Questions where the main pipeline has no expected article in its top k."""
     if mode not in retrieval or "questions" not in retrieval[mode]:
         return []
-    misses = [
-        q
-        for q in retrieval[mode]["questions"]
-        if q["first_hit_rank"] is None or q["first_hit_rank"] > k
-    ]
+    misses = [q for q in retrieval[mode]["questions"] if q["recall@5"] < 1.0]
     lines = [
-        f"Questions with no expected article in the top {k} of `{mode}`: "
+        f"Questions not fully found in the top {k} of `{mode}` (nothing found, or for "
+        f"`multi_article` at least one required article missing): "
         f"{len(misses)} of {len(retrieval[mode]['questions'])}.",
     ]
     if misses:
@@ -109,12 +106,33 @@ def _answer_section(answers: dict[str, Any]) -> list[str]:
         f"| `answer_facts` recall, strict (also demands prepositions and conjunctions) | "
         f"{_pct(answers.get('facts_recall_strict', answers['facts_recall']))} | "
         f"{answers['n_answerable']} |",
-        f"| Answers with every number and article confirmed by citations | "
+        f"| Grounded answers: numbers, articles and quotes are in the cited text "
+        f"(share of the answers given, not of all questions) | "
         f"{_pct(answers['verified_rate'])} | {answers['n_answered']} |",
         "",
         "Outcome statuses: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
+        "",
+        *_answer_caveats(),
     ]
     return lines
+
+
+def _answer_caveats() -> list[str]:
+    """What the answer metrics do NOT say. Kept next to the numbers on purpose."""
+    return [
+        "**How to read these numbers.**",
+        "",
+        "- *Grounded answers* is a syntactic check: the numbers with units, the article numbers "
+        "and the quotes of the answer occur in the cited fragments. It is not the share of legally "
+        "correct answers; a grounded answer can still draw a wrong conclusion from the right "
+        "article. It also counts only the answers that were given.",
+        "- *`answer_facts` recall* is lexical overlap with the expected facts (words and numbers "
+        "after a crude stemming). It misses a correct answer in other words and can accept a "
+        "wrong answer that contains the same words.",
+        "- *Correct refusals* depend on a threshold that was chosen on this same golden set, so "
+        "they are optimistic for new questions. Only a set that was not used to choose any "
+        "parameter or threshold gives an honest estimate (see `eval --frozen` in the README).",
+    ]
 
 
 def _calibration_section(calibration: dict[str, Any]) -> list[str]:
@@ -153,6 +171,13 @@ def render_markdown(results: dict[str, Any]) -> str:
         f"Dataset: **{ds['name']}** — {ds['n_articles']} articles, {ds['n_chunks']} chunks, "
         f"{ds['n_questions']} questions (`{ds['golden']}`)."
     )
+    if results.get("frozen"):
+        out += [
+            "",
+            "> **Frozen test set.** The RRF parameters, the refusal threshold and the prompts "
+            "were fixed before this run and not tuned on these questions. No threshold "
+            "calibration is shown on purpose.",
+        ]
     if ds["name"] == "fixture":
         out += [
             "",
@@ -175,7 +200,9 @@ def render_markdown(results: dict[str, Any]) -> str:
         f"Embeddings `{cfg['embedding_model']}`, reranker `{cfg['reranker_model']}`, "
         f"RRF k={cfg['rrf_k']} (dense weight {cfg.get('rrf_dense_weight', 1):g}), "
         f"rerank top-{cfg['candidates_top_n']} -> top-{cfg['final_top_k']}. "
-        "Hit = at least one expected article among the top-k distinct articles.",
+        "Recall@k: a question counts as found when ANY expected article is among the top-k "
+        "distinct articles (alternatives); for `multi_article` it is the SHARE of the required "
+        "articles found, and MRR uses the rank where the last required article appears.",
         "",
         "## Retrieval",
         "",

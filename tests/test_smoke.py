@@ -23,3 +23,15 @@ def test_settings_read_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_get_settings_is_cached() -> None:
     assert get_settings() is get_settings()
+
+
+def test_dataset_overrides_point_the_same_corpus_at_another_question_set() -> None:
+    from pathlib import Path
+
+    from tkrag.datasets import get_dataset
+
+    base = get_dataset("fixture", Settings(_env_file=None))
+    other = get_dataset("fixture", Settings(_env_file=None), Path("x.jsonl"), "results_test")
+    assert other.corpus_path == base.corpus_path and other.document == base.document
+    assert other.golden_path == Path("x.jsonl") and other.report_stem == "results_test"
+    assert base.report_stem == "results"

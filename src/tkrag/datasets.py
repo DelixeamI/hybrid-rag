@@ -1,6 +1,6 @@
 """The two datasets the project knows: a small synthetic fixture and the real corpus."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tkrag.config import Settings
@@ -52,9 +52,21 @@ def full_dataset(settings: Settings) -> Dataset:
     )
 
 
-def get_dataset(name: str, settings: Settings) -> Dataset:
+def get_dataset(
+    name: str,
+    settings: Settings,
+    golden: Path | None = None,
+    stem: str | None = None,
+) -> Dataset:
+    """`golden` and `stem` point the same corpus at another question set and report name."""
     if name == "fixture":
-        return FIXTURE
-    if name == "full":
-        return full_dataset(settings)
-    raise ValueError(f"unknown dataset {name!r}: use 'fixture' or 'full'")
+        dataset = FIXTURE
+    elif name == "full":
+        dataset = full_dataset(settings)
+    else:
+        raise ValueError(f"unknown dataset {name!r}: use 'fixture' or 'full'")
+    if golden is not None:
+        dataset = replace(dataset, golden_path=golden)
+    if stem is not None:
+        dataset = replace(dataset, report_stem=stem)
+    return dataset

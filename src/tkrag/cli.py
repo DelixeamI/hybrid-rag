@@ -4,6 +4,7 @@ import argparse
 import sys
 from collections import Counter
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from tkrag.components import (
@@ -14,11 +15,11 @@ from tkrag.components import (
     make_reranker,
     make_retriever,
 )
-from tkrag.config import get_settings
-from tkrag.datasets import ROOT, get_dataset
+from tkrag.config import Settings, get_settings
+from tkrag.datasets import ROOT, Dataset, get_dataset
 from tkrag.db import connect
 from tkrag.eval.answer_eval import best_scores, calibrate_threshold, load_thresholds
-from tkrag.eval.golden import load_golden, validate_items, validate_quotas
+from tkrag.eval.golden import load_golden, overlap_errors, validate_items, validate_quotas
 from tkrag.eval.report import write_reports
 from tkrag.eval.run import prepare, run_full, run_retrieval
 from tkrag.generation.answerer import Answerer
@@ -30,11 +31,17 @@ from tkrag.retrieval.types import MODES, Mode
 
 def _add_dataset(parser: argparse.ArgumentParser, default: str = "fixture") -> None:
     parser.add_argument("--dataset", choices=["fixture", "full"], default=default)
+    parser.add_argument("--golden", type=Path, help="use another question set (JSONL)")
+    parser.add_argument("--stem", help="report file name: reports/<stem>.md and .json")
+
+
+def _dataset(args: argparse.Namespace, settings: Settings) -> Dataset:
+    return get_dataset(args.dataset, settings, args.golden, args.stem)
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
     settings = get_settings()
-    dataset = get_dataset(args.dataset, settings)
+    dataset = _dataset(args, settings)
     conn = connect(settings.database_url)
     report = ingest(conn, dataset.corpus_path, dataset.document, make_embedder(settings))
     print(report.summary())
@@ -43,7 +50,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 def cmd_eval_retrieval(args: argparse.Namespace) -> int:
     settings = get_settings()
-    dataset = get_dataset(args.dataset, settings)
+    dataset = _dataset(args, settings)
     modes: tuple[Mode, ...] = tuple(args.modes) if args.modes else MODES
     conn = connect(settings.database_url)
     embedder = make_embedder(settings)
@@ -65,11 +72,18 @@ def _print_gate(results: dict[str, Any]) -> int:
 
 def _run_full(args: argparse.Namespace, llm: LLMClient, gate: bool) -> int:
     settings = get_settings()
-    dataset = get_dataset(args.dataset, settings)
+    dataset = _dataset(args, settings)
     thresholds = load_thresholds(ROOT / settings.thresholds_path) if gate else None
     conn = connect(settings.database_url)
     results = run_full(
-        conn, dataset, settings, make_embedder(settings), make_reranker(settings), llm, thresholds
+        conn,
+        dataset,
+        settings,
+        make_embedder(settings),
+        make_reranker(settings),
+        llm,
+        thresholds,
+        frozen=getattr(args, "frozen", False),
     )
     md, js = write_reports(results, settings.reports_dir, dataset.report_stem)
     print(f"wrote {md} and {js}")
@@ -99,7 +113,7 @@ def cmd_record(args: argparse.Namespace) -> int:
 
 def cmd_ask(args: argparse.Namespace) -> int:
     settings = get_settings()
-    dataset = get_dataset(args.dataset, settings)
+    dataset = _dataset(args, settings)
     conn = connect(settings.database_url)
     retriever = make_retriever(
         conn, settings, dataset.document, make_embedder(settings), make_reranker(settings)
@@ -111,7 +125,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 def cmd_calibrate(args: argparse.Namespace) -> int:
     settings = get_settings()
-    dataset = get_dataset(args.dataset, settings)
+    dataset = _dataset(args, settings)
     conn = connect(settings.database_url)
     embedder = make_embedder(settings)
     items, _ = prepare(conn, dataset, embedder)
@@ -126,7 +140,7 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
 
 def cmd_golden_check(args: argparse.Namespace) -> int:
     settings = get_settings()
-    dataset = get_dataset(args.dataset, settings)
+    dataset = _dataset(args, settings)
     items = load_golden(dataset.golden_path)
     known = {a.number for a in live_articles(parse_articles(read_text(dataset.corpus_path)))}
     issues = validate_items(items, known)
@@ -135,6 +149,13 @@ def cmd_golden_check(args: argparse.Namespace) -> int:
         errors += validate_quotas(items).errors
     counts = Counter(i.type for i in items)
     print(f"{len(items)} questions: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    if args.against:
+        other = load_golden(args.against)
+        errors += overlap_errors(items, other)
+        shared = {a for i in items for a in i.expected_articles} & {
+            a for i in other for a in i.expected_articles
+        }
+        print(f"{len(shared)} expected article(s) also occur in {args.against.name}")
     for error in errors:
         print(f"ERROR: {error}")
     return 1 if errors else 0
@@ -157,6 +178,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_dataset(p)
     p.add_argument("--llm", choices=["recorded", "configured"], default="recorded")
     p.add_argument(
+        "--frozen",
+        action="store_true",
+        help="treat the question set as a test set: show no threshold calibration, mark the report",
+    )
+    p.add_argument(
         "--prune-cassettes",
         action="store_true",
         help="after a successful run delete cassettes of this model that nothing replayed",
@@ -165,6 +191,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("record", help="run the eval on the real LLM and write cassettes")
     _add_dataset(p)
+    p.add_argument(
+        "--frozen", action="store_true", help="test set: do not compute a threshold calibration"
+    )
     p.add_argument(
         "--resume",
         action="store_true",
@@ -178,6 +207,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("golden-check", help="validate the golden set (structure and quotas)")
     _add_dataset(p)
+    p.add_argument(
+        "--against", type=Path, help="another golden set this one must not repeat questions of"
+    )
     p.set_defaults(func=cmd_golden_check)
 
     p = sub.add_parser("ask", help="ask one question")
