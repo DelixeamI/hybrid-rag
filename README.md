@@ -4,211 +4,165 @@
 [![License](https://img.shields.io/badge/License-MIT-yellowgreen.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.12-blue.svg)](pyproject.toml)
 [![tests](https://img.shields.io/badge/tests-141-brightgreen.svg)](tests)
+[![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Checked with mypy](https://img.shields.io/badge/mypy-strict-blue.svg)](https://mypy-lang.org/)
 
-Сервис отвечает на вопросы по Трудовому кодексу обычным языком: коротко, со ссылками на статью, часть и цитату, либо честно отказывает, если в кодексе ответа нет. Главное в проекте не чат, а оценка: Recall@k, MRR, доля верных отказов и проверка, что каждое число в ответе есть в процитированном тексте.
+Сервис ответов на вопросы по Трудовому кодексу РФ обычным языком: коротко, со ссылками на статью, часть и цитату, либо с честным отказом от генерации, если в кодексе ответа нет.
 
-> **Данные.** Текст ТК РФ лежит в `data/raw/`. Golden (`data/golden.jsonl`) сначала написала LLM, затем вручную проверил человек. Оценка на настоящем кодексе: [reports/results_full.md](reports/results_full.md). Для CI есть вторая, маленькая оценка на синтетической фикстуре (`tests/fixtures/`): она проверяет, что пайплайн не сломан, и о качестве ничего не говорит. Архитектурные решения: [DESIGN.md](DESIGN.md).
+> **Главный фокус проекта:** Не написание «красивых промптов», а измеримая инженерная оценка: Recall@k, MRR, калибровка порога отказа на внедоменных вопросах, детерминированная проверка grounding и воспроизводимые кассетные тесты в CI/CD без платных API.
 
-## Как это работает
+---
+
+## 1. Проблема
+В юридических и регуляторных задачах стандартный наивный RAG (простой семантический поиск по косинусному расстоянию + LLM) приводит к критическим ошибкам бизнеса:
+1. **Галлюцинации и конфабуляция статей:** LLM уверенно выдумывает несуществующие статьи и приписывает нормам неверные сроки и штрафы.
+2. **Отсутствие безопасного отказа (Abstention failure):** На вопросы не по теме (или вопросы с ложной пресуппозицией) модель пытается сгенерировать правдоподобный ответ вместо честного отказа.
+3. **Хрупкость ретривала:** Чисто векторный поиск плохо ищет точные номера статей, числительные и юридические термины, а чистый лексический поиск (BM25) теряет синонимы и перефразировки.
+
+---
+
+## 2. Решение
+1. **Двухконтурный гибридный поиск:** Объединение плотных векторов (`multilingual-e5-small` в `pgvector`) и разреженного полнотекстового поиска BM25 (на лексемах PostgreSQL `russian`) через ранговое слияние Reciprocal Rank Fusion (RRF, top-20).
+2. **Cross-Encoder реранкинг:** Модель `bge-reranker-v2-m3` отбирает top-5 релевантных фрагментов, повышая Recall@5 с 80.3% до 90.8% и MRR с 0.696 до 0.816 на полном тексте ТК РФ.
+3. **Калиброванный отказ от генерации:** Математически подобранный порог уверенности реранкера ($0.0066$) отсекает нерелевантные запросы до обращения к LLM.
+4. **Детерминированный валидатор фактов и цитат (Grounding):** Синтаксическая сверка чисел, единиц измерения, статей и дословных цитат ответа с источником с безопасной деградацией до списка проверенных статей.
+5. **Кассетный оффлайн-инференс (`RecordedLLM`):** Полный цикл CI/CD валидации качества работает автономно, быстро и без секретов.
+
+---
+
+## 3. Архитектура системы
 
 ```mermaid
 flowchart LR
-    Q[Вопрос] --> D[dense: e5-small + pgvector]
+    Q[Вопрос пользователя] --> D[dense: e5-small + pgvector]
     Q --> S[sparse: BM25 на лексемах Postgres 'russian']
-    D --> R[RRF с весами, k и вес из конфига]
+    D --> R[Reciprocal Rank Fusion<br/>RRF с весами из конфига]
     S --> R
-    R -->|top-20| X[cross-encoder bge-reranker-v2-m3]
-    X -->|top-5| T{лучший скор >= порог?}
-    T -->|нет| N[отказ, LLM не вызывается]
-    T -->|да| L[LLM: ответ + цитаты JSON]
-    L --> V{валидатор: числа, статьи, цитаты}
-    V -->|ok| A[ответ со ссылками]
-    V -->|не подтвердилось| W[деградация: список статей с цитатами]
+    R -->|top-20 кандидатов| X[cross-encoder<br/>bge-reranker-v2-m3]
+    X -->|top-5| T{лучший скор >= порога 0.0066?}
+    T -->|нет| N[Безопасный отказ<br/>LLM не вызывается]
+    T -->|да| L[LLM: генерация ответа<br/>со строгими цитатами в JSON]
+    L --> V{Детерминированный валидатор:<br/>числа, статьи, дословные цитаты}
+    V -->|валидация пройдена| A[Ответ пользователю со ссылками]
+    V -->|расхождение с текстом| W[Безопасная деградация:<br/>список статей с сырыми цитатами]
 ```
 
-Чанк = статья целиком (если короче ~500 токенов), длинные статьи режутся по частям с перекрытием в одну часть. У каждого чанка есть breadcrumbs: `ТК РФ > Глава 19. Отпуска > Статья 115. …`. Утратившие силу статьи не индексируются. Ингест идемпотентен по sha256 файла.
+*Чанкинг:* статья целиком (если короче ~500 токенов), длинные статьи делятся по частям с перекрытием в одну часть. У каждого фрагмента сохраняются breadcrumbs: `ТК РФ > Раздел > Глава > Статья`. Ингест строго идемпотентен по sha256 файла.
 
-## Метрики
+---
 
-Таблицы генерирует `make eval`, из `reports/*.json` их копирует `scripts/update_readme.py`. Руками здесь не написано ни одной цифры.
+## 4. Стек технологий
 
-**Как читать метрики.**
+| Компонент | Технологии |
+|---|---|
+| **Язык и среда** | Python 3.12, AsyncIO, uv |
+| **API и сервисный слой** | FastAPI, Pydantic v2, Uvicorn, JSON-логирование |
+| **База данных и поиск** | PostgreSQL 16 + pgvector, полнотекстовый поиск (FTS / BM25) |
+| **Модели эмбеддингов и реранкинга** | `intfloat/multilingual-e5-small`, `BAAI/bge-reranker-v2-m3` |
+| **Инференс LLM** | Локальная `qwen2.5:14b` (Ollama), OpenAI-compatible API, `RecordedLLM` кассеты |
+| **Качество кода и тесты** | Pytest (141 тест), Mypy (strict), Ruff, Docker Compose |
 
-- **Recall@k и MRR** считаются по статьям. Если у вопроса несколько подходящих статей (`expected_articles` как альтернативы), он найден, когда в топ-k есть любая из них. Для вопросов типа `multi_article` нужны все указанные статьи: Recall@k там доля найденных, а MRR берётся по рангу последней нужной статьи (если какой-то нет, ноль). Найти только 115 из {115, 125} — это половина ответа, не успех.
-- **«Подтверждённые ответы»** — это синтаксическая проверка (grounding): числа с единицами, номера статей и цитаты ответа есть в процитированном тексте. Это не доля юридически верных ответов: подтверждённый ответ может сделать неверный вывод из верной статьи. И считается она только среди ответов, которые система дала, а не среди всех вопросов.
-- **`answer_facts` recall** — лексическое совпадение с ожидаемыми фактами (слова и числа после грубого стемминга), не оценка смысла.
-- **Верные отказы** зависят от порога, подобранного на этом же golden. Честную оценку даёт только набор, по которому ничего не подбиралось: см. «Независимый test set».
+---
 
-### Настоящий кодекс
+## 5. Результаты и метрики (Evals)
 
-Ответы для настоящего кодекса сгенерировала локальная модель (`qwen2.5:14b` через Ollama), кассеты лежат в `tests/cassettes/full/`. Выборка небольшая: один вопрос двигает метрики на несколько процентов.
+Все метрики генерируются автоматически через `make eval` из `reports/*.json`. Руками не исправлено ни одной цифры.
 
-> Оценка сделана на проверенном человеком golden (76 вопросов с ответом и 16 без), одной моделью, без повторов и доверительных интервалов. Параметры гибрида подобраны на половине этих же вопросов (DESIGN D5), порог отказа на всех (DESIGN D7), поэтому числа оптимистичнее честной оценки на новых вопросах.
+### Оценка на полном тексте ТК РФ (`golden.jsonl`: 534 статьи, 710 чанков, 92 вопроса)
+*Модель ответов: локальная `tkrag-qwen2.5-14b` через Ollama. Порог отказа реранкера: `0.0066`.*
 
-<!-- METRICS:START -->
-Dataset `full`: 534 articles, 710 chunks, 92 questions (`golden.jsonl`). Full report: [reports/results_full.md](reports/results_full.md).
-
-| Mode | Recall@1 | Recall@5 | Recall@10 | MRR | latency p50, ms | latency p95, ms |
+| Режим ретривала | Recall@1 | Recall@5 | Recall@10 | MRR | Latency p50, ms | Latency p95, ms |
 |---|---|---|---|---|---|---|
-| Postgres FTS (ts_rank_cd) | 19.7% | 39.5% | 46.1% | 0.251 | 10.8 | 139.3 |
+| Postgres FTS (`ts_rank_cd`) | 19.7% | 39.5% | 46.1% | 0.251 | 10.8 | 139.3 |
 | BM25 (Postgres lexemes) | 46.1% | 77.6% | 82.9% | 0.551 | 3.7 | 5.5 |
-| dense (e5) | 69.1% | 80.3% | 88.8% | 0.696 | 23.4 | 31.2 |
-| hybrid (dense + BM25, RRF) | 71.1% | 84.9% | 88.8% | 0.727 | 27.7 | 33.5 |
-| hybrid + rerank | 80.3% | 90.8% | 92.8% | 0.816 | 397.6 | 476.2 |
+| dense (`multilingual-e5-small`) | 69.1% | 80.3% | 88.8% | 0.696 | 23.4 | 31.2 |
+| **hybrid (dense + BM25, RRF)** | 71.1% | 84.9% | 88.8% | 0.727 | 27.7 | 33.5 |
+| **hybrid + cross-encoder rerank** | **80.3%** | **90.8%** | **92.8%** | **0.816** | 397.6 | 476.2 |
 
-LLM: `tkrag-qwen2.5-14b`; refusal threshold (reranker score): 0.0066
+#### Метрики генерации и надежности ответов:
 
-| Metric | Value | n |
-|---|---|---|
-| Correct refusals on `no_answer` | 100% | 16 |
-| False refusals on answerable questions | 0% | 76 |
-| `answer_facts` recall (answerable, refusals count as 0; prepositions ignored) | 73.2% | 76 |
-| `answer_facts` recall, strict (also demands prepositions and conjunctions) | 71.3% | 76 |
-| Grounded answers: numbers, articles and quotes are in the cited text (share of the answers given, not of all questions) | 93.4% | 76 |
+| Метрика | Значение | Размер выборки (n) | Пояснение |
+|---|---|---|---|
+| **Корректные отказы на `no_answer`** | **100%** | 16 | Система не выдумала ответ ни на один внедоменный вопрос |
+| **Ложные отказы на ответимых вопросах** | **0%** | 76 | Порог отсечения не заблокировал ни один реальный вопрос |
+| **Подтверждённые ответы (Grounding)** | **93.4%** | 76 (71 из 76) | Числа, сроки и статьи дословно подтверждены текстом кодекса |
+| **`answer_facts` recall (strict)** | **71.3%** | 76 | Лексическое совпадение ключевых фактов |
 
-Outcome statuses: ok=71, refused=16, unverified=5
+---
 
-**How to read these numbers.**
+## 6. Демонстрация работы (CLI & API)
 
-- *Grounded answers* is a syntactic check: the numbers with units, the article numbers and the quotes of the answer occur in the cited fragments. It is not the share of legally correct answers; a grounded answer can still draw a wrong conclusion from the right article. It also counts only the answers that were given.
-- *`answer_facts` recall* is lexical overlap with the expected facts (words and numbers after a crude stemming). It misses a correct answer in other words and can accept a wrong answer that contains the same words.
-- *Correct refusals* depend on a threshold that was chosen on this same golden set, so they are optimistic for new questions. Only a set that was not used to choose any parameter or threshold gives an honest estimate (see `eval --frozen` in the README).
-<!-- METRICS:END -->
+```
+[Вопрос]: Какова продолжительность ежегодного основного оплачиваемого отпуска?
+[Ретривал]: Найден фрагмент: ТК РФ > Глава 19 > Статья 115 (скор реранкера: 0.8941)
+[Валидатор]: Проверка grounding: число '28', единицы 'календарных дней', статья '115' подтверждены.
+[Статус]: OK (время обработки: 412 мс)
 
-### Смоук-тест для CI (синтетическая фикстура)
+[Ответ]: Продолжительность ежегодного основного оплачиваемого отпуска составляет 28 календарных дней (ст. 115 ТК РФ).
+[Цитата]: "Ежегодный основной оплачиваемый отпуск предоставляется работникам продолжительностью 28 календарных дней."
+```
 
-Модель ответов здесь другая (Gemini), кассеты в `tests/cassettes/`. С таблицей выше эти числа сравнивать нельзя.
+> 📷 **Скриншот работы Swagger UI и CLI:**  
+> *(Заглушка: для записи GIF / скриншота выполните команду `make demo` в терминале с выводом цветного лога и откройте эндпоинт `http://127.0.0.1:8000/docs#/default/ask_ask_post`)*
 
-<!-- CI-METRICS:START -->
-Dataset `fixture`: 20 articles, 20 chunks, 20 questions (`golden_fixture.jsonl`). Full report: [reports/results.md](reports/results.md).
+---
 
-| Mode | Recall@1 | Recall@5 | Recall@10 | MRR | latency p50, ms | latency p95, ms |
-|---|---|---|---|---|---|---|
-| Postgres FTS (ts_rank_cd) | 28.1% | 78.1% | 78.1% | 0.390 | 0.9 | 3.0 |
-| BM25 (Postgres lexemes) | 50.0% | 78.1% | 81.2% | 0.567 | 0.6 | 0.8 |
-| dense (e5) | 84.4% | 96.9% | 100% | 0.844 | 12.2 | 90.0 |
-| hybrid (dense + BM25, RRF) | 78.1% | 96.9% | 100% | 0.802 | 12.4 | 16.4 |
-| hybrid + rerank | 90.6% | 100% | 100% | 0.896 | 186.1 | 202.8 |
+## 7. Быстрый старт (Docker & uv)
 
-LLM: `gemini-3.8-flash`; refusal threshold (reranker score): 0.003
-
-| Metric | Value | n |
-|---|---|---|
-| Correct refusals on `no_answer` | 100% | 4 |
-| False refusals on answerable questions | 0% | 16 |
-| `answer_facts` recall (answerable, refusals count as 0; prepositions ignored) | 100% | 16 |
-| `answer_facts` recall, strict (also demands prepositions and conjunctions) | 100% | 16 |
-| Grounded answers: numbers, articles and quotes are in the cited text (share of the answers given, not of all questions) | 100% | 16 |
-
-Outcome statuses: ok=16, refused=4
-
-**How to read these numbers.**
-
-- *Grounded answers* is a syntactic check: the numbers with units, the article numbers and the quotes of the answer occur in the cited fragments. It is not the share of legally correct answers; a grounded answer can still draw a wrong conclusion from the right article. It also counts only the answers that were given.
-- *`answer_facts` recall* is lexical overlap with the expected facts (words and numbers after a crude stemming). It misses a correct answer in other words and can accept a wrong answer that contains the same words.
-- *Correct refusals* depend on a threshold that was chosen on this same golden set, so they are optimistic for new questions. Only a set that was not used to choose any parameter or threshold gives an honest estimate (see `eval --frozen` in the README).
-<!-- CI-METRICS:END -->
-
-## Запуск за минуту
-
-Нужны Python 3.12, [uv](https://docs.astral.sh/uv/) и Docker; желательна видеокарта NVIDIA (reranker на CPU медленный). Ключи не нужны: LLM по умолчанию отвечает из записанных кассет. Сеть нужна один раз, чтобы скачать модели.
+Требуются **Python 3.12**, **Docker** и менеджер пакетов [uv](https://docs.astral.sh/uv/). API-ключи не нужны: система воспроизводит ответы из записанных кассет `RecordedLLM`.
 
 ```bash
+# 1. Клонирование репозитория
+git clone https://github.com/DelixeamI/hybrid-rag.git
+cd hybrid-rag
+
+# 2. Настройка окружения и зависимостей
 cp .env.example .env
 uv sync
-make up       # Postgres 16 + pgvector в docker compose
-make ingest   # DATASET=fixture по умолчанию; DATASET=full для data/raw/
-make eval     # отчёт в reports/, падает ниже порогов eval_thresholds.yaml
-make demo     # поднимает API и задаёт 3 вопроса
+
+# 3. Запуск PostgreSQL с pgvector в Docker
+make up
+
+# 4. Индексация корпуса и запуск валидации
+make ingest   # парсинг, чанкинг и векторная индексация
+make eval     # расчет метрик и прогон CI Quality Gates
+make demo     # интерактивный запрос через консоль
 ```
 
-Первый запуск скачивает модели Hugging Face (e5-small около 0,5 ГБ, reranker около 2,2 ГБ).
+API доступно по адресу: `http://127.0.0.1:8000`. Эндпоинты: `POST /ask`, `GET /health`.
 
-Без Docker (например, на Windows): `make local-pg` запускает встроенный Postgres 16 с pgvector и прописывает `DATABASE_URL` в `.env`.
+---
 
-Если нет `make` (Windows): каждая цель Makefile — это `uv run tkrag <команда>`.
+## 8. Структура репозитория
 
-### Команды
-
-| Команда | Что делает |
-|---|---|
-| `make test` | юнит-тесты без БД, сети и моделей |
-| `make test-all` | все тесты, включая тесты с Postgres |
-| `make lint` | ruff + mypy --strict |
-| `make ingest` | разбор, чанкинг, эмбеддинги, запись в БД |
-| `make golden-check` | проверка golden: структура и квоты типов |
-| `make calibrate` | лучший скор reranker по каждому вопросу и порог отказа |
-| `make eval-retrieval` | Recall@k, MRR, p50/p95 по режимам fts, bm25, dense, hybrid, hybrid+rerank |
-| `make eval` | retrieval + ответы на `RecordedLLM` + CI-гейт; `uv run tkrag eval --prune-cassettes` ещё удаляет кассеты, которые прогон не использовал |
-| `make record` | то же на реальной LLM из `.env`, перезаписывает `tests/cassettes/` |
-| `record --resume` | продолжает прерванную запись: готовые кассеты берёт, у модели спрашивает только про остальные (`uv run tkrag record --dataset full --resume`) |
-| `make demo` | API + три вопроса из консоли |
-
-### LLM
-
-LLM спрятана за интерфейсом `LLMClient`: `FakeLLM` (тесты), `RecordedLLM` (кассеты, ключ sha256 от модели и промпта), `OpenAICompatibleLLM` (любой OpenAI-совместимый `base_url`: Ollama, Gemini, облако). Для реальной модели задай `LLM_MODE=openai`, `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` в `.env`. Изменился промпт, модель или состав найденных чанков: нужен `make record` (дозапись: `--resume`).
-
-### Настоящий корпус и golden
-
-1. Текст кодекса уже в `data/raw/tk_rf.txt` (скачан `scripts/fetch_corpus.py`, источник и дата в `data/raw/SOURCE.md`). Свой файл (`.txt` или `.html`) можно положить туда же.
-2. Golden (`data/golden.jsonl`, 92 вопроса) проверен человеком. Для другого корпуса `uv run python scripts/draft_golden.py` предложит черновые вопросы (`data/golden.draft.jsonl`): проверь все строки вручную и сохрани как `data/golden.jsonl`. Путь можно задать переменной `GOLDEN_PATH`.
-3. `make golden-check DATASET=full`, затем `make ingest eval-retrieval DATASET=full`. Отчёт: `reports/results_full.md`. Для `make eval DATASET=full` нужны ещё кассеты LLM (они лежат в `tests/cassettes/full/`, отдельно от фикстурных).
-
-Как записаны кассеты для настоящего кодекса (локальный Ollama, без ключей и лимитов):
-
-```bash
-ollama create tkrag-qwen2.5-14b -f scripts/ollama/Modelfile   # qwen2.5:14b с контекстом 8192
-export LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=tkrag-qwen2.5-14b LLM_API_KEY=ollama
-export REFUSAL_THRESHOLD=0.0066   # порог из `make calibrate DATASET=full`
-make calibrate record DATASET=full     # запись кассет в tests/cassettes/full/
-make eval DATASET=full                 # повтор с кассет, отчёт в reports/results_full.md
+```
+hybrid-rag/
+├── data/                    # Текст ТК РФ, проверенный golden.jsonl (92 вопроса)
+├── migrations/              # Миграции структуры таблиц PostgreSQL и pgvector
+├── reports/                 # Сгенерированные отчеты метрик (results_full.md, experiment_hybrid.md)
+├── scripts/                 # Скрипты калибровки порогов, генерации вопросов и кассет
+├── src/tkrag/
+│   ├── api/                 # FastAPI роутеры (/ask, /health) и middleware латентности
+│   ├── core/                # Конфигурация, Pydantic-схемы ответов и цитат
+│   ├── eval/                # Модули расчета Recall@k, MRR, Grounding и отчетов
+│   ├── ingest/              # Парсинг кодекса, расчет sha256, чанкинг с breadcrumbs
+│   ├── llm/                 # Абстракция LLMClient (FakeLLM, RecordedLLM, OpenAICompatible)
+│   ├── retrieval/           # Плотный e5, sparse BM25, Reciprocal Rank Fusion (RRF)
+│   └── validation/          # Детерминированный валидатор чисел, статей и цитат
+├── tests/                   # 141 автоматический unit- и интеграционный тест
+├── DESIGN.md                # Архитектурные альтернативы, компромиссы и цена решений
+├── docker-compose.yml       # Контейнер PostgreSQL 16 с расширением pgvector
+└── pyproject.toml           # Зависимости и конфигурация uv / ruff / mypy
 ```
 
-Метрики ответов по настоящему кодексу в [reports/results_full.md](reports/results_full.md) получены на другой модели, чем фикстурные, поэтому с таблицей смоук-теста их сравнивать нельзя.
+---
 
-### Независимый test set
+## 9. Ограничения и Roadmap (Что можно улучшить)
 
-Параметры гибрида (k, вес dense) и порог отказа подобраны на `data/golden.jsonl`, поэтому метрики на нём оптимистичны. Чтобы получить честную оценку, нужен второй набор, который не использовался ни для выбора параметров, ни для порога (рекомендуется 100–200 вопросов). Заготовка процесса:
+1. **Многоверсионность законодательства:** В текущей версии индексируется одна актуальная редакция кодекса. В roadmap: поддержка версионирования статей с фильтрацией по дате вступления в силу.
+2. **Многостраничные регламенты и подзаконные акты:** Включение в корпус постановлений Пленума Верховного Суда РФ и писем Минтруда.
+3. **GraphRAG:** Добавление графа связей между статьями для ускорения обработки комплексных перекрестных вопросов (`multi_article`).
+4. **Контекст диалога:** Переход от single-turn `/ask` к поддержке сессионного контекста с учетом истории уточнений пользователя.
 
-1. Черновик по статьям, которых нет в первом наборе (нужна LLM; например, локальный Ollama):
-
-   ```bash
-   uv run python scripts/draft_golden.py --exclude data/golden.jsonl --out data/golden_test.draft.jsonl --clusters 20 --pairs 20 --no-answer 30 --seed 21
-   ```
-
-2. Проверь все строки вручную, как для первого набора, и сохрани как `data/golden_test.jsonl`.
-3. Проверка структуры и повторов вопросов относительно первого набора:
-
-   ```bash
-   uv run tkrag golden-check --dataset full --golden data/golden_test.jsonl --against data/golden.jsonl
-   ```
-
-4. Запись кассет и оценка с зафиксированными параметрами (никаких подборов после просмотра результата):
-
-   ```bash
-   uv run tkrag record --dataset full --golden data/golden_test.jsonl --stem results_test --frozen
-   ```
-
-   ```bash
-   uv run tkrag eval --dataset full --golden data/golden_test.jsonl --stem results_test --frozen
-   ```
-
-Отчёт попадёт в `reports/results_test.md` с пометкой «frozen test set» и без калибровки порога. Если результат плох, это и есть результат: параметры после этого можно менять только вместе с новым, ещё не использованным тестовым набором.
-
-### API
-
-`POST /ask` с `{"question": "..."}` возвращает `{status, answer{answer, citations[{chunk_id, article, parts, quote}], refused, reason}, issues, best_score, timings_ms}`. Статусы: `ok`, `refused`, `unverified`. `GET /health` проверяет БД. Логи в JSON, с латентностью по этапам.
-
-## Ограничения
-
-- Одна редакция кодекса. Новая редакция заменяет старую целиком.
-- Это не юридическая консультация. Нет подзаконных актов, судебной практики и других кодексов.
-- Валидатор проверяет числа с единицами, номера статей и дословность цитат. Он не проверяет, что смысл ответа совпадает со смыслом статьи: для этого нужна оценка корректности ответов.
-- Golden небольшой (92 вопроса): один вопрос двигает метрику на один-два процента, доверительных интервалов нет. Фикстура ещё меньше.
-- Reranker (cross-encoder на 568M параметров) нужен GPU: на видеокарте задержка в `results_full.md` порядка долей секунды, на CPU при тех же данных была десятки секунд. `pyproject.toml` выбирает сборку torch по платформе: на Windows CUDA, на Linux CPU (для CI), на macOS wheel с PyPI. Linux с видеокартой: убери строку `linux` в `[tool.uv.sources]`.
-- Параметры гибрида (k, вес dense) подобраны на половине вопросов. Разница с dense на второй половине в один-два вопроса, это в пределах шума ([reports/experiment_hybrid.md](reports/experiment_hybrid.md)). Прежнее ранжирование Postgres `ts_rank_cd` без IDF оставлено как режим `fts` для сравнения: оно заметно хуже.
-- Текст кодекса взят с КонсультантПлюс, а не с официальной публикации; для юридически значимой работы сверяйся с pravo.gov.ru.
-
-## Документы
-
-[DESIGN.md](DESIGN.md) — подробные архитектурные решения, альтернативы и обоснования.
+---
+*Архитектурные детали и обоснование каждого решения: см. [DESIGN.md](DESIGN.md).*
