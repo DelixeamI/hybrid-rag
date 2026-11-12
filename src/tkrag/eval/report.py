@@ -89,36 +89,62 @@ def _first_table(lines: list[str]) -> list[str]:
     return lines[: lines.index("")] if "" in lines else lines
 
 
+def _frac(k: int, n: int) -> str:
+    return f"{k}/{n} ({_pct(k / n)})" if n else "n/a"
+
+
+def _answer_rows(a: dict[str, Any]) -> list[str]:
+    """One column of the answer table: the same five numbers for any subset of questions."""
+    return [
+        _frac(a["n_correct_refusals"], a["n_no_answer"]),
+        _frac(a["n_false_refusals"], a["n_answerable"]),
+        _pct(a["facts_recall"]),
+        _pct(a.get("facts_recall_strict", a["facts_recall"])),
+        _frac(a["n_grounded"], a["n_answered"]),
+    ]
+
+
+_ANSWER_LABELS = [
+    "Correct refusals on `no_answer`",
+    "False refusals on answerable questions",
+    "`answer_facts` recall (refusals count as 0; prepositions ignored)",
+    "`answer_facts` recall, strict (also demands prepositions and conjunctions)",
+    "Grounded answers: numbers, articles and quotes are in the cited text "
+    "(of the answers given, not of all questions)",
+]
+
+
 def _answer_section(answers: dict[str, Any]) -> list[str]:
-    counts = answers["status_counts"]
+    columns = {"All": answers}
+    if "by_split" in answers:
+        columns["DEV (threshold fitted here)"] = answers["by_split"]["dev"]
+        columns["TEST (held out)"] = answers["by_split"]["test"]
+    cells = [_answer_rows(a) for a in columns.values()]
     lines = [
         f"LLM: `{answers['llm_model']}`; refusal threshold (reranker score): "
         f"{answers['refusal_threshold']}",
         "",
-        "| Metric | Value | n |",
-        "|---|---|---|",
-        f"| Correct refusals on `no_answer` | {_pct(answers['correct_refusal_rate'])} | "
-        f"{answers['n_no_answer']} |",
-        f"| False refusals on answerable questions | {_pct(answers['false_refusal_rate'])} | "
-        f"{answers['n_answerable']} |",
-        f"| `answer_facts` recall (answerable, refusals count as 0; prepositions ignored) | "
-        f"{_pct(answers['facts_recall'])} | {answers['n_answerable']} |",
-        f"| `answer_facts` recall, strict (also demands prepositions and conjunctions) | "
-        f"{_pct(answers.get('facts_recall_strict', answers['facts_recall']))} | "
-        f"{answers['n_answerable']} |",
-        f"| Grounded answers: numbers, articles and quotes are in the cited text "
-        f"(share of the answers given, not of all questions) | "
-        f"{_pct(answers['verified_rate'])} | {answers['n_answered']} |",
+        "| Metric | " + " | ".join(columns) + " |",
+        "|---|" + "---|" * len(columns),
+    ]
+    for row, label in enumerate(_ANSWER_LABELS):
+        lines.append(f"| {label} | " + " | ".join(col[row] for col in cells) + " |")
+    counts = answers["status_counts"]
+    lines += [
         "",
-        "Outcome statuses: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
-        "",
-        *_answer_caveats(),
+        "Outcome statuses (all): " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
     ]
     return lines
 
 
-def _answer_caveats() -> list[str]:
+def _answer_caveats(has_split: bool) -> list[str]:
     """What the answer metrics do NOT say. Kept next to the numbers on purpose."""
+    threshold_note = (
+        "- *Correct refusals*: the threshold was fitted on the DEV half only, so the TEST column "
+        "is a held-out estimate. TEST holds few `no_answer` questions, so it is a rough one."
+        if has_split
+        else "- *Correct refusals* come from a frozen threshold that was not tuned on this set."
+    )
     return [
         "**How to read these numbers.**",
         "",
@@ -129,18 +155,18 @@ def _answer_caveats() -> list[str]:
         "- *`answer_facts` recall* is lexical overlap with the expected facts (words and numbers "
         "after a crude stemming). It misses a correct answer in other words and can accept a "
         "wrong answer that contains the same words.",
-        "- *Correct refusals* depend on a threshold that was chosen on this same golden set, so "
-        "they are optimistic for new questions. Only a set that was not used to choose any "
-        "parameter or threshold gives an honest estimate (see `eval --frozen` in the README).",
+        threshold_note,
+        "- The retrieval parameters (RRF k and dense weight) were chosen on the DEV half of the "
+        "answerable questions (`reports/experiment_hybrid.md`); the TEST half was not used.",
     ]
 
 
 def _calibration_section(calibration: dict[str, Any]) -> list[str]:
     lines = [
-        "Refuse when the best reranker score is below the threshold. "
-        f"The threshold with the best (correct refusals - false refusals) is "
-        f"**{calibration['chosen']}**. It is a suggestion fitted on this same golden set, "
-        "not an independent estimate.",
+        "Refuse when the best reranker score is below the threshold. The threshold with the best "
+        "(correct refusals - false refusals) on the DEV half "
+        f"({calibration.get('n_questions', '?')} questions) is **{calibration['chosen']}**. "
+        "The TEST half was not used to choose it.",
         "",
         "| Threshold | Correct refusals | False refusals |",
         "|---|---|---|",
@@ -212,7 +238,15 @@ def render_markdown(results: dict[str, Any]) -> str:
     if misses:
         out += ["", "### Misses", "", *misses]
     if "answers" in results:
-        out += ["", "## Answers", "", *_answer_section(results["answers"])]
+        answers = results["answers"]
+        out += [
+            "",
+            "## Answers",
+            "",
+            *_answer_section(answers),
+            "",
+            *_answer_caveats("by_split" in answers),
+        ]
     if "calibration" in results:
         out += ["", "## Refusal threshold", "", *_calibration_section(results["calibration"])]
     if "gate" in results:

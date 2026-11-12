@@ -5,7 +5,7 @@ from pathlib import Path
 import psycopg
 
 from tkrag.config import Settings
-from tkrag.datasets import ROOT
+from tkrag.datasets import ROOT, Dataset
 from tkrag.llm import FakeLLM, LLMClient, OpenAICompatibleLLM, RecordedLLM, RecordingLLM
 from tkrag.retrieval.bm25 import Bm25Index
 from tkrag.retrieval.embedder import Embedder, SentenceTransformerEmbedder
@@ -49,6 +49,13 @@ def make_recording_llm(
 ) -> LLMClient:
     """Real model whose every answer is written to a cassette (`make record`)."""
     return RecordingLLM(make_real_llm(settings), cassettes_dir(settings, dataset), resume)
+
+
+def refusal_threshold(settings: Settings, dataset: Dataset) -> float:
+    """The environment wins over the dataset's calibrated value."""
+    if settings.refusal_threshold is not None:
+        return settings.refusal_threshold
+    return dataset.refusal_threshold
 
 
 def make_retriever(

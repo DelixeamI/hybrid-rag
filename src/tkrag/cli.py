@@ -14,11 +14,13 @@ from tkrag.components import (
     make_recording_llm,
     make_reranker,
     make_retriever,
+    refusal_threshold,
 )
 from tkrag.config import Settings, get_settings
 from tkrag.datasets import ROOT, Dataset, get_dataset
 from tkrag.db import connect
 from tkrag.eval.answer_eval import best_scores, calibrate_threshold, load_thresholds
+from tkrag.eval.experiments import split_dev_test
 from tkrag.eval.golden import load_golden, overlap_errors, validate_items, validate_quotas
 from tkrag.eval.report import write_reports
 from tkrag.eval.run import prepare, run_full, run_retrieval
@@ -118,7 +120,9 @@ def cmd_ask(args: argparse.Namespace) -> int:
     retriever = make_retriever(
         conn, settings, dataset.document, make_embedder(settings), make_reranker(settings)
     )
-    answerer = Answerer(retriever, make_llm(settings, args.dataset), settings.refusal_threshold)
+    answerer = Answerer(
+        retriever, make_llm(settings, args.dataset), refusal_threshold(settings, dataset)
+    )
     print(answerer.ask(args.question).model_dump_json(indent=2))
     return 0
 
@@ -131,10 +135,14 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     items, _ = prepare(conn, dataset, embedder)
     retriever = make_retriever(conn, settings, dataset.document, embedder, make_reranker(settings))
     scored = best_scores(retriever, items, settings.context_chunks)
+    dev_ids = {i.id for i in split_dev_test(items)[0]}
     for (_, score), item in sorted(zip(scored, items, strict=True), key=lambda x: x[0][1]):
-        print(f"{score:.4f}  {item.type:<13} {item.id}  {item.question[:60]}")
-    calibration = calibrate_threshold(scored)
-    print(f"\nsuggested refusal_threshold = {calibration.threshold}")
+        part = "DEV " if item.id in dev_ids else "TEST"
+        print(f"{score:.4f}  {part}  {item.type:<13} {item.id}  {item.question[:56]}")
+    dev_scored = [s for s, i in zip(scored, items, strict=True) if i.id in dev_ids]
+    calibration = calibrate_threshold(dev_scored)
+    print(f"\nthreshold fitted on the DEV half only = {calibration.threshold}")
+    print(f"value in use for this dataset: {refusal_threshold(settings, dataset)}")
     return 0
 
 

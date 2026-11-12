@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     llm_min_interval: float = Field(default=0.0, ge=0.0)  # seconds between calls (rate limits)
 
     # Generation
-    # Chosen by `make calibrate` on the fixture golden; DESIGN.md D6 explains how fragile it is.
-    refusal_threshold: float = Field(default=0.003, ge=0.0, le=1.0)  # reranker score
+    # Reranker score below which the answer is refused. None = the dataset's own calibrated value
+    # (tkrag.datasets); set REFUSAL_THRESHOLD to override it. DESIGN.md D7.
+    refusal_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     context_chunks: int = Field(default=5, ge=1)
 
     # Paths

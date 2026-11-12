@@ -21,7 +21,10 @@ class SentenceTransformerEmbedder:
     def __init__(self, model_name: str, dim: int) -> None:
         from sentence_transformers import SentenceTransformer
 
-        self._model = SentenceTransformer(model_name)
+        try:  # offline first: a cached model needs no network (and no rate-limited HEAD requests)
+            self._model = SentenceTransformer(model_name, local_files_only=True)
+        except OSError:  # not downloaded yet
+            self._model = SentenceTransformer(model_name)
         self.name = model_name
         self.dim = dim
 

@@ -18,7 +18,10 @@ class CrossEncoderReranker:
         from sentence_transformers import CrossEncoder
 
         # One output label -> sentence-transformers applies a sigmoid: score is in [0, 1].
-        self._model = CrossEncoder(model_name, max_length=512)
+        try:  # offline first: a cached model needs no network
+            self._model = CrossEncoder(model_name, max_length=512, local_files_only=True)
+        except OSError:  # not downloaded yet
+            self._model = CrossEncoder(model_name, max_length=512)
 
     def rerank(self, query: str, hits: list[Hit], top_k: int) -> list[Hit]:
         if not hits:

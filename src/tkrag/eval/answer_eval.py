@@ -1,5 +1,6 @@
-"""Answer evaluation: refusals, answer_facts recall, share of fully verified answers."""
+"""Answer evaluation: refusals, answer_facts recall, share of grounded answers."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any
@@ -12,6 +13,8 @@ from tkrag.generation.answerer import Answerer
 from tkrag.generation.schemas import AskResult
 from tkrag.retrieval.retriever import Searcher
 from tkrag.textnorm import content_stems, stems
+
+Scored = tuple[GoldenItem, AskResult]
 
 
 def fact_found(fact: str, answer_text: str, strict: bool = False) -> bool:
@@ -31,44 +34,68 @@ def facts_recall(facts: list[str], result: AskResult, strict: bool = False) -> f
     return mean([1.0 if fact_found(f, result.answer.answer, strict) else 0.0 for f in facts])
 
 
-def evaluate_answers(
-    answerer: Answerer, items: list[GoldenItem], llm_model: str, threshold: float
-) -> dict[str, Any]:
-    results = [(item, answerer.ask(item.question)) for item in items]
+def summarize(results: Sequence[Scored]) -> dict[str, Any]:
+    """Answer metrics for any subset of questions; counts are kept next to the rates."""
     no_answer = [r for i, r in results if i.type == "no_answer"]
     answerable = [(i, r) for i, r in results if i.type != "no_answer"]
     answered = [r for _, r in results if r.status in ("ok", "unverified")]
     counts: dict[str, int] = {}
     for _, r in results:
         counts[r.status] = counts.get(r.status, 0) + 1
+    correct = sum(r.status == "refused" for r in no_answer)
+    false = sum(r.status == "refused" for _, r in answerable)
+    grounded = sum(r.status == "ok" for r in answered)
     return {
-        "llm_model": llm_model,
-        "refusal_threshold": threshold,
         "n_no_answer": len(no_answer),
         "n_answerable": len(answerable),
         "n_answered": len(answered),
-        "correct_refusal_rate": mean([1.0 if r.status == "refused" else 0.0 for r in no_answer]),
-        "false_refusal_rate": mean([1.0 if r.status == "refused" else 0.0 for _, r in answerable]),
+        "n_correct_refusals": correct,
+        "n_false_refusals": false,
+        "n_grounded": grounded,
+        "correct_refusal_rate": correct / len(no_answer) if no_answer else 0.0,
+        "false_refusal_rate": false / len(answerable) if answerable else 0.0,
         "facts_recall": mean([facts_recall(i.answer_facts, r) for i, r in answerable]),
         "facts_recall_strict": mean(
             [facts_recall(i.answer_facts, r, strict=True) for i, r in answerable]
         ),
-        "verified_rate": mean([1.0 if r.status == "ok" else 0.0 for r in answered]),
+        "verified_rate": grounded / len(answered) if answered else 0.0,
         "status_counts": counts,
-        "items": [
-            {
-                "id": i.id,
-                "type": i.type,
-                "status": r.status,
-                "reason": r.answer.reason,
-                "best_score": round(r.best_score, 4),
-                "answer": r.answer.answer,
-                "articles": [c.article for c in r.answer.citations],
-                "issues": r.issues,
-            }
-            for i, r in results
-        ],
     }
+
+
+def evaluate_answers(
+    answerer: Answerer,
+    items: list[GoldenItem],
+    llm_model: str,
+    threshold: float,
+    splits: dict[str, set[str]] | None = None,
+) -> dict[str, Any]:
+    """Ask every question. `splits` maps a name (dev, test) to question ids for sub-reports."""
+    results = [(item, answerer.ask(item.question)) for item in items]
+    out: dict[str, Any] = {
+        "llm_model": llm_model,
+        "refusal_threshold": threshold,
+        **summarize(results),
+    }
+    if splits:
+        out["by_split"] = {
+            name: summarize([(i, r) for i, r in results if i.id in ids])
+            for name, ids in splits.items()
+        }
+    out["items"] = [
+        {
+            "id": i.id,
+            "type": i.type,
+            "status": r.status,
+            "reason": r.answer.reason,
+            "best_score": round(r.best_score, 4),
+            "answer": r.answer.answer,
+            "articles": [c.article for c in r.answer.citations],
+            "issues": r.issues,
+        }
+        for i, r in results
+    ]
+    return out
 
 
 @dataclass(frozen=True)
@@ -80,7 +107,7 @@ class Calibration:
 def calibrate_threshold(scored: list[tuple[bool, float]]) -> Calibration:
     """Pick the score below which we refuse: maximises (correct refusals - false refusals).
 
-    `scored` = (is_no_answer, best retrieval score) for every golden question.
+    `scored` = (is_no_answer, best retrieval score) for the questions used to calibrate.
     """
     scores = sorted({s for _, s in scored})
     candidates = [0.0] + [(a + b) / 2 for a, b in pairwise(scores)]

@@ -8,7 +8,9 @@ This is a convenience for development. The documented setup is `docker compose u
 """
 
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pgserver
@@ -29,9 +31,32 @@ def write_dsn(dsn: str) -> None:
     ENV_FILE.write_text(text, encoding="utf-8")
 
 
+def wait_for_slow_start(timeout: float = 120.0) -> str:
+    """pgserver gives up after 10 s, but a cold start (crash recovery) can take longer.
+
+    pg_ctl keeps starting the server in the background; read its port from postmaster.pid and
+    wait until it accepts connections.
+    """
+    pid_file = DATA_DIR / "postmaster.pid"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        lines = pid_file.read_text().splitlines() if pid_file.exists() else []
+        if len(lines) >= 4 and lines[3].strip().isdigit():
+            dsn = f"postgresql://postgres:@127.0.0.1:{lines[3].strip()}/postgres"
+            try:
+                psycopg.connect(dsn, connect_timeout=2).close()
+                return dsn
+            except psycopg.OperationalError:
+                pass
+        time.sleep(2)
+    raise SystemExit("Postgres did not accept connections in time; see .pgdata/log")
+
+
 def start() -> None:
-    server = pgserver.get_server(DATA_DIR, cleanup_mode=None)
-    dsn = server.get_uri()
+    try:
+        dsn = pgserver.get_server(DATA_DIR, cleanup_mode=None).get_uri()
+    except subprocess.TimeoutExpired:  # slow cold start, not a failure
+        dsn = wait_for_slow_start()
     with psycopg.connect(dsn, autocommit=True) as conn:
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
     write_dsn(dsn)

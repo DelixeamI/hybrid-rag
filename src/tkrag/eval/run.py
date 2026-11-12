@@ -4,10 +4,11 @@ from typing import Any
 
 import psycopg
 
-from tkrag.components import make_retriever
+from tkrag.components import make_retriever, refusal_threshold
 from tkrag.config import Settings
 from tkrag.datasets import Dataset
 from tkrag.eval.answer_eval import calibrate_threshold, check_gate, evaluate_answers
+from tkrag.eval.experiments import split_dev_test
 from tkrag.eval.golden import GoldenItem, load_golden, validate_items
 from tkrag.eval.retrieval_eval import evaluate_retrieval
 from tkrag.generation.answerer import Answerer
@@ -92,14 +93,29 @@ def run_full(
     results = run_retrieval(conn, dataset, settings, embedder, reranker)
     items = load_golden(dataset.golden_path)
     retriever = make_retriever(conn, settings, dataset.document, embedder, reranker)
-    answerer = Answerer(retriever, llm, settings.refusal_threshold, settings.context_chunks)
-    results["answers"] = evaluate_answers(answerer, items, llm.model, settings.refusal_threshold)
+    threshold = refusal_threshold(settings, dataset)
+    answerer = Answerer(retriever, llm, threshold, settings.context_chunks)
+    splits = None
+    if not frozen:  # a frozen test file is one whole held-out set; otherwise split DEV / TEST
+        dev, test = split_dev_test(items)
+        splits = {"dev": {i.id for i in dev}, "test": {i.id for i in test}}
+    results["answers"] = evaluate_answers(answerer, items, llm.model, threshold, splits)
     if frozen:  # a test set must not be used to pick anything, not even a suggested threshold
         results["frozen"] = True
     else:
-        scored = [(i["type"] == "no_answer", i["best_score"]) for i in results["answers"]["items"]]
+        assert splits is not None
+        scored = [
+            (i["type"] == "no_answer", i["best_score"])
+            for i in results["answers"]["items"]
+            if i["id"] in splits["dev"]  # calibrate on DEV only; TEST stays untouched
+        ]
         calibration = calibrate_threshold(scored)
-        results["calibration"] = {"chosen": calibration.threshold, "curve": calibration.curve}
+        results["calibration"] = {
+            "chosen": calibration.threshold,
+            "curve": calibration.curve,
+            "fitted_on": "dev",
+            "n_questions": len(scored),
+        }
     if thresholds is not None:
         results["gate"] = check_gate(results, thresholds)
     return results

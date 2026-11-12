@@ -5,7 +5,13 @@ from typing import Any
 from psycopg_pool import ConnectionPool
 
 from tkrag.api.main import Service, create_app
-from tkrag.components import make_embedder, make_llm, make_reranker, make_retriever
+from tkrag.components import (
+    make_embedder,
+    make_llm,
+    make_reranker,
+    make_retriever,
+    refusal_threshold,
+)
 from tkrag.config import Settings, get_settings
 from tkrag.datasets import Dataset, get_dataset
 from tkrag.db import connect, prepare_connection
@@ -28,12 +34,13 @@ def build_service(settings: Settings, dataset: Dataset) -> Service:
     embedder = make_embedder(settings)
     reranker = make_reranker(settings)
     llm = make_llm(settings, dataset.name)
+    threshold = refusal_threshold(settings, dataset)
 
     def ask(question: str) -> AskResult:
         with pool.connection() as conn:
             bm25 = bm25_cache.get(conn)
             retriever = make_retriever(conn, settings, dataset.document, embedder, reranker, bm25)
-            answerer = Answerer(retriever, llm, settings.refusal_threshold, settings.context_chunks)
+            answerer = Answerer(retriever, llm, threshold, settings.context_chunks)
             return answerer.ask(question)
 
     def health() -> dict[str, Any]:

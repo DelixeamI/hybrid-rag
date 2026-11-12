@@ -16,6 +16,9 @@ class Dataset:
     document: str  # value of documents.name in the DB
     golden_path: Path
     report_stem: str  # reports/<stem>.md and .json
+    # Best reranker score below which the answer is refused. Scores depend on the corpus, so each
+    # dataset has its own. `REFUSAL_THRESHOLD` in the environment overrides it.
+    refusal_threshold: float
 
 
 FIXTURE = Dataset(
@@ -24,7 +27,14 @@ FIXTURE = Dataset(
     document="tk-fixture",
     golden_path=ROOT / "tests" / "golden_fixture.jsonl",
     report_stem="results",
+    refusal_threshold=0.003,  # calibrated on the fixture golden (a toy corpus)
 )
+
+
+# Calibrated on the DEV half of the golden set only (src/tkrag/eval/experiments.py: split_dev_test,
+# seed 13): the midpoint between the highest no_answer score and the lowest answerable score
+# there. The TEST half was not used. DESIGN.md D7.
+FULL_REFUSAL_THRESHOLD = 0.0069
 
 
 class CorpusNotFoundError(FileNotFoundError):
@@ -49,6 +59,7 @@ def full_dataset(settings: Settings) -> Dataset:
         document="tk-rf",
         golden_path=ROOT / settings.golden_path,
         report_stem="results_full",
+        refusal_threshold=FULL_REFUSAL_THRESHOLD,
     )
 
 

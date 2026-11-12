@@ -1,6 +1,9 @@
 from typing import Any
 
+import pytest
+
 from tkrag.eval.answer_eval import calibrate_threshold, check_gate, fact_found, facts_recall
+from tkrag.eval.golden import GoldenItem
 from tkrag.generation.schemas import Answer, AskResult
 
 
@@ -72,3 +75,84 @@ def test_calibration_separates_clean_scores() -> None:
     assert 0.002 < calibration.threshold <= 0.5
     best = max(calibration.curve, key=lambda c: c["youden"])
     assert best["correct_refusal"] == 1.0 and best["false_refusal"] == 0.0
+
+
+def _golden(ident: str, kind: str) -> GoldenItem:
+    return GoldenItem.model_validate(
+        {
+            "id": ident,
+            "question": f"q {ident}",
+            "expected_articles": [] if kind == "no_answer" else ["1"],
+            "answer_facts": [] if kind == "no_answer" else ["x"],
+            "type": kind,
+        }
+    )
+
+
+def _result(status: str) -> AskResult:
+    answer = Answer(answer="a", refused=status == "refused")
+    return AskResult(status=status, answer=answer)
+
+
+def test_summarize_keeps_counts_next_to_rates() -> None:
+    from tkrag.eval.answer_eval import summarize
+
+    results = [
+        (_golden("n1", "no_answer"), _result("refused")),
+        (_golden("n2", "no_answer"), _result("ok")),  # an invented answer to an off-topic question
+        (_golden("a1", "factual"), _result("ok")),
+        (_golden("a2", "factual"), _result("unverified")),
+        (_golden("a3", "factual"), _result("refused")),  # a false refusal
+    ]
+    s = summarize(results)
+    assert (s["n_correct_refusals"], s["n_no_answer"]) == (1, 2)
+    assert (s["n_false_refusals"], s["n_answerable"]) == (1, 3)
+    assert (s["n_grounded"], s["n_answered"]) == (2, 3)  # ok + ok + unverified were given
+    assert s["verified_rate"] == pytest.approx(2 / 3)
+
+
+def test_answerable_split_does_not_change_when_no_answer_questions_are_added() -> None:
+    from tkrag.eval.experiments import split_dev_test
+
+    answerable = (
+        [_golden(f"f{i}", "factual") for i in range(9)]
+        + [_golden(f"m{i}", "multi_article") for i in range(5)]
+        + [_golden(f"p{i}", "paraphrase") for i in range(8)]
+    )
+    refusals = [_golden(f"n{i}", "no_answer") for i in range(6)]
+    dev_a, test_a = split_dev_test(answerable)
+    dev_all, test_all = split_dev_test(answerable + refusals)
+    # the hybrid parameters were chosen on the DEV half of the answerable questions only
+    assert {i.id for i in dev_all if i.type != "no_answer"} == {i.id for i in dev_a}
+    assert {i.id for i in test_all if i.type != "no_answer"} == {i.id for i in test_a}
+    assert sum(i.type == "no_answer" for i in dev_all) == 3  # no_answer is split in half too
+
+
+def test_refusal_threshold_comes_from_the_dataset_unless_the_environment_sets_it() -> None:
+    from tkrag.components import refusal_threshold
+    from tkrag.config import Settings
+    from tkrag.datasets import FIXTURE, FULL_REFUSAL_THRESHOLD
+
+    assert refusal_threshold(Settings(_env_file=None), FIXTURE) == FIXTURE.refusal_threshold
+    assert refusal_threshold(Settings(_env_file=None, refusal_threshold=0.42), FIXTURE) == 0.42
+    assert FIXTURE.refusal_threshold != FULL_REFUSAL_THRESHOLD  # scores depend on the corpus
+
+
+def test_the_report_shows_dev_and_test_columns_with_counts() -> None:
+    from tkrag.eval.report import _answer_section
+
+    side = {
+        "n_no_answer": 8, "n_answerable": 37, "n_answered": 37, "n_correct_refusals": 8,
+        "n_false_refusals": 0, "n_grounded": 35, "correct_refusal_rate": 1.0,
+        "false_refusal_rate": 0.0, "facts_recall": 0.7, "facts_recall_strict": 0.68,
+        "verified_rate": 35 / 37, "status_counts": {"ok": 35, "refused": 8},
+    }  # fmt: skip
+    answers = {
+        "llm_model": "m",
+        "refusal_threshold": 0.01,
+        **side,
+        "by_split": {"dev": side, "test": side},
+    }
+    text = "\n".join(_answer_section(answers))
+    assert "TEST (held out)" in text and "DEV (threshold fitted here)" in text
+    assert "8/8 (100%)" in text and "0/37 (0%)" in text and "35/37" in text

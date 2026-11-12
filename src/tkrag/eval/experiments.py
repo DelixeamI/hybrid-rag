@@ -18,18 +18,25 @@ from tkrag.eval.metrics import mean, recall_at_k, reciprocal_rank
 from tkrag.retrieval.rrf import rrf_scores
 from tkrag.retrieval.search import build_tsquery
 
+SPLIT_ORDER = ("factual", "multi_article", "paraphrase", "no_answer")
+
 
 def split_dev_test(
     items: Sequence[GoldenItem], seed: int = 13
 ) -> tuple[list[GoldenItem], list[GoldenItem]]:
-    """Stratified 50/50 split by question type; the same seed always gives the same split."""
+    """Stratified 50/50 split by question type; the same seed always gives the same split.
+
+    Types are shuffled in a fixed order with `no_answer` last, so adding the no_answer questions
+    never changes how the answerable ones are split (the hybrid parameters were chosen on the
+    DEV half of the answerable questions, and TEST must stay untouched by that choice).
+    """
     rng = random.Random(seed)
     by_type: dict[str, list[GoldenItem]] = defaultdict(list)
     for item in items:
         by_type[item.type].append(item)
     dev: list[GoldenItem] = []
     test: list[GoldenItem] = []
-    for kind in sorted(by_type):
+    for kind in [k for k in SPLIT_ORDER if k in by_type]:
         group = sorted(by_type[kind], key=lambda i: i.id)
         rng.shuffle(group)
         half = (len(group) + 1) // 2

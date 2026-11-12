@@ -8,11 +8,11 @@ Embeddings `intfloat/multilingual-e5-small`, reranker `BAAI/bge-reranker-v2-m3`,
 
 | Mode | Recall@1 | Recall@5 | Recall@10 | MRR | latency p50, ms | latency p95, ms |
 |---|---|---|---|---|---|---|
-| Postgres FTS (ts_rank_cd) | 19.7% | 39.5% | 46.1% | 0.251 | 10.8 | 139.3 |
-| BM25 (Postgres lexemes) | 46.1% | 77.6% | 82.9% | 0.551 | 3.7 | 5.5 |
-| dense (e5) | 69.1% | 80.3% | 88.8% | 0.696 | 23.4 | 31.2 |
-| hybrid (dense + BM25, RRF) | 71.1% | 84.9% | 88.8% | 0.727 | 27.7 | 33.5 |
-| hybrid + rerank | 80.3% | 90.8% | 92.8% | 0.816 | 397.6 | 476.2 |
+| Postgres FTS (ts_rank_cd) | 19.7% | 39.5% | 46.1% | 0.251 | 13.7 | 185.3 |
+| BM25 (Postgres lexemes) | 46.1% | 77.6% | 82.9% | 0.551 | 4.8 | 7.5 |
+| dense (e5) | 69.1% | 80.3% | 88.8% | 0.696 | 22.8 | 36.0 |
+| hybrid (dense + BM25, RRF) | 71.1% | 84.9% | 88.8% | 0.727 | 26.9 | 36.5 |
+| hybrid + rerank | 80.3% | 90.8% | 92.8% | 0.816 | 2990.7 | 4254.8 |
 
 **Recall@1 by question type**
 
@@ -55,98 +55,69 @@ Questions not fully found in the top 5 of `hybrid_rerank` (nothing found, or for
 
 ## Answers
 
-LLM: `tkrag-qwen2.5-14b`; refusal threshold (reranker score): 0.0066
+LLM: `tkrag-qwen2.5-14b`; refusal threshold (reranker score): 0.0069
 
-| Metric | Value | n |
-|---|---|---|
-| Correct refusals on `no_answer` | 100% | 16 |
-| False refusals on answerable questions | 0% | 76 |
-| `answer_facts` recall (answerable, refusals count as 0; prepositions ignored) | 73.2% | 76 |
-| `answer_facts` recall, strict (also demands prepositions and conjunctions) | 71.3% | 76 |
-| Grounded answers: numbers, articles and quotes are in the cited text (share of the answers given, not of all questions) | 93.4% | 76 |
+| Metric | All | DEV (threshold fitted here) | TEST (held out) |
+|---|---|---|---|
+| Correct refusals on `no_answer` | 16/16 (100%) | 8/8 (100%) | 8/8 (100%) |
+| False refusals on answerable questions | 0/76 (0%) | 0/39 (0%) | 0/37 (0%) |
+| `answer_facts` recall (refusals count as 0; prepositions ignored) | 73.2% | 69.2% | 77.5% |
+| `answer_facts` recall, strict (also demands prepositions and conjunctions) | 71.3% | 65.4% | 77.5% |
+| Grounded answers: numbers, articles and quotes are in the cited text (of the answers given, not of all questions) | 71/76 (93.4%) | 38/39 (97.4%) | 33/37 (89.2%) |
 
-Outcome statuses: ok=71, refused=16, unverified=5
+Outcome statuses (all): ok=71, refused=16, unverified=5
 
 **How to read these numbers.**
 
 - *Grounded answers* is a syntactic check: the numbers with units, the article numbers and the quotes of the answer occur in the cited fragments. It is not the share of legally correct answers; a grounded answer can still draw a wrong conclusion from the right article. It also counts only the answers that were given.
 - *`answer_facts` recall* is lexical overlap with the expected facts (words and numbers after a crude stemming). It misses a correct answer in other words and can accept a wrong answer that contains the same words.
-- *Correct refusals* depend on a threshold that was chosen on this same golden set, so they are optimistic for new questions. Only a set that was not used to choose any parameter or threshold gives an honest estimate (see `eval --frozen` in the README).
+- *Correct refusals*: the threshold was fitted on the DEV half only, so the TEST column is a held-out estimate. TEST holds few `no_answer` questions, so it is a rough one.
+- The retrieval parameters (RRF k and dense weight) were chosen on the DEV half of the answerable questions (`reports/experiment_hybrid.md`); the TEST half was not used.
 
 ## Refusal threshold
 
-Refuse when the best reranker score is below the threshold. The threshold with the best (correct refusals - false refusals) is **0.0066**. It is a suggestion fitted on this same golden set, not an independent estimate.
+Refuse when the best reranker score is below the threshold. The threshold with the best (correct refusals - false refusals) on the DEV half (47 questions) is **0.0069**. The TEST half was not used to choose it.
 
 | Threshold | Correct refusals | False refusals |
 |---|---|---|
 | 0.0 | 0% | 0% |
-| 0.0001 | 6.2% | 0% |
-| 0.0003 | 18.8% | 0% |
-| 0.0006 | 25.0% | 0% |
-| 0.001 | 31.2% | 0% |
-| 0.0012 | 37.5% | 0% |
-| 0.0014 | 43.8% | 0% |
-| 0.0015 | 56.2% | 0% |
-| 0.0016 | 62.5% | 0% |
-| 0.0017 | 68.8% | 0% |
-| 0.0022 | 75.0% | 0% |
-| 0.0034 | 81.2% | 0% |
-| 0.0046 | 87.5% | 0% |
-| 0.0048 | 93.8% | 0% |
-| 0.0066 | 100% | 0% |
-| 0.0086 | 100% | 1.3% |
-| 0.0221 | 100% | 2.6% |
-| 0.043 | 100% | 3.9% |
-| 0.0894 | 100% | 5.3% |
-| 0.1354 | 100% | 6.6% |
-| 0.1431 | 100% | 7.9% |
-| 0.1644 | 100% | 9.2% |
-| 0.2096 | 100% | 10.5% |
-| 0.2614 | 100% | 11.8% |
-| 0.2961 | 100% | 13.2% |
-| 0.3463 | 100% | 14.5% |
-| 0.4106 | 100% | 15.8% |
-| 0.45 | 100% | 17.1% |
-| 0.4939 | 100% | 18.4% |
-| 0.5422 | 100% | 19.7% |
-| 0.6101 | 100% | 21.1% |
-| 0.668 | 100% | 22.4% |
-| 0.6906 | 100% | 23.7% |
-| 0.7169 | 100% | 25.0% |
-| 0.7544 | 100% | 26.3% |
-| 0.8208 | 100% | 27.6% |
-| 0.875 | 100% | 28.9% |
-| 0.8865 | 100% | 30.3% |
-| 0.9008 | 100% | 31.6% |
-| 0.9215 | 100% | 32.9% |
-| 0.943 | 100% | 34.2% |
-| 0.9586 | 100% | 35.5% |
-| 0.9639 | 100% | 36.8% |
-| 0.9689 | 100% | 38.2% |
-| 0.9735 | 100% | 39.5% |
-| 0.9757 | 100% | 40.8% |
-| 0.9774 | 100% | 42.1% |
-| 0.98 | 100% | 43.4% |
-| 0.9837 | 100% | 44.7% |
-| 0.9872 | 100% | 46.1% |
-| 0.9893 | 100% | 47.4% |
-| 0.9901 | 100% | 48.7% |
-| 0.9907 | 100% | 50.0% |
+| 0.0006 | 12.5% | 0% |
+| 0.001 | 25.0% | 0% |
+| 0.0013 | 37.5% | 0% |
+| 0.0016 | 50.0% | 0% |
+| 0.0022 | 62.5% | 0% |
+| 0.0036 | 75.0% | 0% |
+| 0.0048 | 87.5% | 0% |
+| 0.0069 | 100% | 0% |
+| 0.0685 | 100% | 2.6% |
+| 0.1568 | 100% | 5.1% |
+| 0.2096 | 100% | 7.7% |
+| 0.2683 | 100% | 10.3% |
+| 0.3673 | 100% | 12.8% |
+| 0.4756 | 100% | 15.4% |
+| 0.61 | 100% | 17.9% |
+| 0.7833 | 100% | 20.5% |
+| 0.875 | 100% | 23.1% |
+| 0.8865 | 100% | 25.6% |
+| 0.9008 | 100% | 28.2% |
+| 0.9215 | 100% | 30.8% |
+| 0.9462 | 100% | 33.3% |
+| 0.9639 | 100% | 35.9% |
+| 0.9712 | 100% | 38.5% |
+| 0.9774 | 100% | 41.0% |
+| 0.9822 | 100% | 43.6% |
+| 0.9872 | 100% | 46.2% |
+| 0.9899 | 100% | 48.7% |
 | 0.9916 | 100% | 51.3% |
-| 0.9921 | 100% | 52.6% |
-| 0.9923 | 100% | 53.9% |
-| 0.9925 | 100% | 55.3% |
-| 0.9932 | 100% | 56.6% |
-| 0.9949 | 100% | 57.9% |
-| 0.9969 | 100% | 60.5% |
-| 0.998 | 100% | 61.8% |
-| 0.998 | 100% | 63.2% |
-| 0.9985 | 100% | 64.5% |
-| 0.999 | 100% | 65.8% |
-| 0.9993 | 100% | 67.1% |
-| 0.9996 | 100% | 71.1% |
-| 0.9997 | 100% | 75.0% |
-| 0.9998 | 100% | 80.3% |
-| 0.9999 | 100% | 82.9% |
-| 1.0 | 100% | 93.4% |
-| 1.0 | 100% | 93.4% |
+| 0.9921 | 100% | 53.8% |
+| 0.9924 | 100% | 56.4% |
+| 0.9943 | 100% | 59.0% |
+| 0.997 | 100% | 61.5% |
+| 0.998 | 100% | 64.1% |
+| 0.9988 | 100% | 66.7% |
+| 0.9996 | 100% | 74.4% |
+| 0.9997 | 100% | 76.9% |
+| 0.9998 | 100% | 82.1% |
+| 0.9999 | 100% | 87.2% |
+| 1.0 | 100% | 92.3% |
+| 1.0 | 100% | 92.3% |
