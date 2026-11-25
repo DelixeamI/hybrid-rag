@@ -51,8 +51,8 @@ def dataset_info(
     }
 
 
-def config_info(settings: Settings) -> dict[str, Any]:
-    return {
+def config_info(settings: Settings, reranker: Reranker | None = None) -> dict[str, Any]:
+    info: dict[str, Any] = {
         "embedding_model": settings.embedding_model,
         "reranker_model": settings.reranker_model,
         "rrf_k": settings.rrf_k,
@@ -60,6 +60,10 @@ def config_info(settings: Settings) -> dict[str, Any]:
         "candidates_top_n": settings.candidates_top_n,
         "final_top_k": settings.final_top_k,
     }
+    runtime = getattr(reranker, "runtime", None)  # only the real cross-encoder has one
+    if runtime:
+        info["reranker_runtime"] = runtime
+    return info
 
 
 def run_retrieval(
@@ -74,7 +78,7 @@ def run_retrieval(
     retriever = make_retriever(conn, settings, dataset.document, embedder, reranker)
     return {
         "dataset": dataset_info(dataset, items, sizes),
-        "config": config_info(settings),
+        "config": config_info(settings, reranker),
         "retrieval": evaluate_retrieval(retriever, items, modes),
     }
 

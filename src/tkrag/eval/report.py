@@ -229,6 +229,15 @@ def render_markdown(results: dict[str, Any]) -> str:
         "Recall@k: a question counts as found when ANY expected article is among the top-k "
         "distinct articles (alternatives); for `multi_article` it is the SHARE of the required "
         "articles found, and MRR uses the rank where the last required article appears.",
+    ]
+    if cfg.get("reranker_runtime"):
+        out += [
+            "",
+            f"Reranker runtime: {cfg['reranker_runtime']}. Latency is the whole retrieval "
+            "(first stage + rerank) after one warm-up query; it is only comparable between runs "
+            "on the same hardware with nothing else holding the GPU.",
+        ]
+    out += [
         "",
         "## Retrieval",
         "",
@@ -280,9 +289,11 @@ def render_readme_block(results: dict[str, Any], results_path: str) -> str:
         f"Dataset `{ds['name']}`: {ds['n_articles']} articles, {ds['n_chunks']} chunks, "
         f"{ds['n_questions']} questions (`{ds['golden']}`). "
         f"Full report: [{results_path}]({results_path}).",
-        "",
-        *_first_table(_retrieval_tables(results["retrieval"])),
     ]
+    runtime = results["config"].get("reranker_runtime")
+    if runtime:
+        lines += ["", f"Reranker runtime: {runtime}."]
+    lines += ["", *_first_table(_retrieval_tables(results["retrieval"]))]
     if "answers" in results:
         lines += ["", *_answer_section(results["answers"])]
     return "\n".join(lines)

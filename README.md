@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/DelixeamI/hybrid-rag/ci.yml?branch=main&label=CI&logo=github)](https://github.com/DelixeamI/hybrid-rag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-yellowgreen.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.12-blue.svg)](pyproject.toml)
-[![tests](https://img.shields.io/badge/tests-145-brightgreen.svg)](tests)
+[![tests](https://img.shields.io/badge/tests-146-brightgreen.svg)](tests)
 [![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Checked with mypy](https://img.shields.io/badge/mypy-strict-blue.svg)](https://mypy-lang.org/)
 
@@ -72,7 +72,7 @@ flowchart LR
 
 Вопросы (`data/golden.jsonl`) делятся пополам на **DEV** и **TEST** (стратификация по типам, фиксированный seed). Параметры гибрида (k и вес dense) подбирались на DEV-половине вопросов с ответом, порог отказа реранкера подобран на DEV-половине всех вопросов. **TEST** для выбора не использовался, так что колонка TEST в таблице ниже это проверка на отложенных вопросах.
 
-Оговорки: идея заменить `ts_rank_cd` на BM25 появилась после просмотра метрик на всём наборе, а не только на DEV; выборки маленькие (в TEST всего 8 вопросов без ответа), поэтому единичные ошибки сильно двигают проценты; независимого набора вопросов по другим статьям пока нет (процедура: `PROGRESS.md`, раздел «Что дальше»).
+Оговорки: идея заменить `ts_rank_cd` на BM25 появилась после просмотра метрик на всём наборе, а не только на DEV; выборки маленькие (в TEST всего 8 вопросов без ответа), поэтому единичные ошибки сильно двигают проценты; независимого набора вопросов по другим статьям пока нет (инструменты для него есть: `scripts/draft_golden.py --exclude`, `tkrag golden-check --against`, `tkrag eval --frozen`).
 
 ### Настоящий кодекс
 
@@ -81,13 +81,15 @@ flowchart LR
 <!-- METRICS:START -->
 Dataset `full`: 534 articles, 710 chunks, 92 questions (`golden.jsonl`). Full report: [reports/results_full.md](reports/results_full.md).
 
+Reranker runtime: cuda:0, float32, NVIDIA GeForce RTX 5070; free VRAM after loading 8.2 of 11.9 GiB.
+
 | Mode | Recall@1 | Recall@5 | Recall@10 | MRR | latency p50, ms | latency p95, ms |
 |---|---|---|---|---|---|---|
-| Postgres FTS (ts_rank_cd) | 19.7% | 39.5% | 46.1% | 0.251 | 13.7 | 185.3 |
-| BM25 (Postgres lexemes) | 46.1% | 77.6% | 82.9% | 0.551 | 4.8 | 7.5 |
-| dense (e5) | 69.1% | 80.3% | 88.8% | 0.696 | 22.8 | 36.0 |
-| hybrid (dense + BM25, RRF) | 71.1% | 84.9% | 88.8% | 0.727 | 26.9 | 36.5 |
-| hybrid + rerank | 80.3% | 90.8% | 92.8% | 0.816 | 2990.7 | 4254.8 |
+| Postgres FTS (ts_rank_cd) | 19.7% | 39.5% | 46.1% | 0.251 | 10.7 | 121.3 |
+| BM25 (Postgres lexemes) | 46.1% | 77.6% | 82.9% | 0.551 | 3.4 | 4.7 |
+| dense (e5) | 69.1% | 80.3% | 88.8% | 0.696 | 19.7 | 32.0 |
+| hybrid (dense + BM25, RRF) | 71.1% | 84.9% | 88.8% | 0.727 | 26.9 | 36.6 |
+| hybrid + rerank | 80.3% | 90.8% | 92.8% | 0.816 | 415.7 | 487.5 |
 
 LLM: `tkrag-qwen2.5-14b`; refusal threshold (reranker score): 0.0069
 
@@ -108,7 +110,7 @@ Outcome statuses (all): ok=71, refused=16, unverified=5
 - **Grounded answers** это синтаксическая проверка (числа с единицами, номера статей и цитаты есть в процитированном тексте), считается только среди данных ответов. Это не доля юридически верных ответов.
 - **`answer_facts` recall** это лексическое совпадение с ожидаемыми фактами, не оценка смысла.
 - **Отказы:** смотри колонку TEST, колонка DEV использовалась для подбора порога. Размер выборки указан в самой ячейке (`k/n`).
-- Задержка reranker дана для RTX 5070; на CPU она в десятки раз больше.
+- Задержка `hybrid + rerank` — это весь поиск (первый этап и реранкер) после одного прогревочного запроса, RTX 5070, fp32; устройство и свободная видеопамять записываются в отчёт (`Reranker runtime`). На CPU задержка в десятки раз больше. Если GPU занят другой моделью (например, Ollama с `qwen2.5:14b`), Windows выносит часть видеопамяти в системную RAM, и реранкер замедляется в разы без всякой ошибки: прежний отчёт с p50 около 3 секунд, вероятнее всего, был снят именно так (DESIGN D6).
 
 ### Смоук-тест для CI (синтетическая фикстура)
 
@@ -117,13 +119,15 @@ Outcome statuses (all): ok=71, refused=16, unverified=5
 <!-- CI-METRICS:START -->
 Dataset `fixture`: 20 articles, 20 chunks, 20 questions (`golden_fixture.jsonl`). Full report: [reports/results.md](reports/results.md).
 
+Reranker runtime: cuda:0, float32, NVIDIA GeForce RTX 5070; free VRAM after loading 8.2 of 11.9 GiB.
+
 | Mode | Recall@1 | Recall@5 | Recall@10 | MRR | latency p50, ms | latency p95, ms |
 |---|---|---|---|---|---|---|
-| Postgres FTS (ts_rank_cd) | 28.1% | 78.1% | 78.1% | 0.390 | 1.9 | 3.4 |
-| BM25 (Postgres lexemes) | 50.0% | 78.1% | 81.2% | 0.567 | 0.7 | 0.9 |
-| dense (e5) | 84.4% | 96.9% | 100% | 0.844 | 15.1 | 73.5 |
-| hybrid (dense + BM25, RRF) | 78.1% | 96.9% | 100% | 0.802 | 13.3 | 16.3 |
-| hybrid + rerank | 90.6% | 100% | 100% | 0.896 | 208.5 | 3232.1 |
+| Postgres FTS (ts_rank_cd) | 28.1% | 78.1% | 78.1% | 0.390 | 1.8 | 3.8 |
+| BM25 (Postgres lexemes) | 50.0% | 78.1% | 81.2% | 0.567 | 0.6 | 0.8 |
+| dense (e5) | 84.4% | 96.9% | 100% | 0.844 | 14.7 | 72.3 |
+| hybrid (dense + BM25, RRF) | 78.1% | 96.9% | 100% | 0.802 | 15.0 | 19.7 |
+| hybrid + rerank | 90.6% | 100% | 100% | 0.896 | 209.3 | 228.5 |
 
 LLM: `gemini-3.8-flash`; refusal threshold (reranker score): 0.003
 
@@ -222,8 +226,6 @@ API доступно по адресу: `http://127.0.0.1:8000`. Эндпоин�
 │   └── datasets.py          # Фикстура и настоящий кодекс: пути, пороги, имена отчётов
 ├── tests/                   # Unit-тесты и тесты с Postgres (маркер db), кассеты LLM, фикстуры
 ├── DESIGN.md                # Решения: проблема, решение, отвергнутая альтернатива, цена
-├── PROGRESS.md              # Состояние, известные проблемы, что не проверено
-├── QUESTIONS.md             # Вопросы к собеседованию по этому коду
 ├── docker-compose.yml       # PostgreSQL 16 с pgvector
 └── pyproject.toml           # Зависимости и конфигурация uv / ruff / mypy
 ```

@@ -55,3 +55,13 @@ def test_update_readme_handles_several_named_blocks() -> None:
     assert "old A" not in once and "old B" in once and "middle" in once
     twice = update_readme(once, RESULTS, "reports/results.md", "CI-METRICS")
     assert "old B" not in twice and "reports/results.md" in twice
+
+
+def test_reranker_runtime_is_shown_only_when_known() -> None:
+    assert "Reranker runtime" not in render_markdown(RESULTS)
+    runtime = "cuda:0, float32, GPU; free VRAM after loading 9.0 of 11.9 GiB"
+    config = {**RESULTS["config"], "reranker_runtime": runtime}  # type: ignore[dict-item]
+    results = {**RESULTS, "config": config}
+    assert f"Reranker runtime: {runtime}." in render_markdown(results)
+    readme = f"x\n{README_START}\n{README_END}\ny"
+    assert runtime in update_readme(readme, results, "reports/r.md")

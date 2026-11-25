@@ -6,15 +6,17 @@ Dataset: **fixture** — 20 articles, 20 chunks, 20 questions (`golden_fixture.j
 
 Embeddings `intfloat/multilingual-e5-small`, reranker `BAAI/bge-reranker-v2-m3`, RRF k=10 (dense weight 3), rerank top-20 -> top-5. Recall@k: a question counts as found when ANY expected article is among the top-k distinct articles (alternatives); for `multi_article` it is the SHARE of the required articles found, and MRR uses the rank where the last required article appears.
 
+Reranker runtime: cuda:0, float32, NVIDIA GeForce RTX 5070; free VRAM after loading 8.2 of 11.9 GiB. Latency is the whole retrieval (first stage + rerank) after one warm-up query; it is only comparable between runs on the same hardware with nothing else holding the GPU.
+
 ## Retrieval
 
 | Mode | Recall@1 | Recall@5 | Recall@10 | MRR | latency p50, ms | latency p95, ms |
 |---|---|---|---|---|---|---|
-| Postgres FTS (ts_rank_cd) | 28.1% | 78.1% | 78.1% | 0.390 | 2.0 | 3.5 |
+| Postgres FTS (ts_rank_cd) | 28.1% | 78.1% | 78.1% | 0.390 | 1.8 | 3.8 |
 | BM25 (Postgres lexemes) | 50.0% | 78.1% | 81.2% | 0.567 | 0.6 | 0.8 |
-| dense (e5) | 84.4% | 96.9% | 100% | 0.844 | 16.8 | 84.8 |
-| hybrid (dense + BM25, RRF) | 78.1% | 96.9% | 100% | 0.802 | 20.1 | 25.5 |
-| hybrid + rerank | 90.6% | 100% | 100% | 0.896 | 331.6 | 3460.4 |
+| dense (e5) | 84.4% | 96.9% | 100% | 0.844 | 14.7 | 72.3 |
+| hybrid (dense + BM25, RRF) | 78.1% | 96.9% | 100% | 0.802 | 15.0 | 19.7 |
+| hybrid + rerank | 90.6% | 100% | 100% | 0.896 | 209.3 | 228.5 |
 
 **Recall@1 by question type**
 

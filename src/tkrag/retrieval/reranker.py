@@ -22,6 +22,26 @@ class CrossEncoderReranker:
             self._model = CrossEncoder(model_name, max_length=512, local_files_only=True)
         except OSError:  # not downloaded yet
             self._model = CrossEncoder(model_name, max_length=512)
+        self.runtime = self._describe_runtime()
+
+    def _describe_runtime(self) -> str:
+        """Device, dtype and free GPU memory at load time, written into the eval report.
+
+        Latency depends on these: on Windows a GPU short of memory silently spills into system
+        RAM and the reranker gets several times slower without any error.
+        """
+        import torch
+
+        device = self._model.model.device
+        dtype = str(next(self._model.model.parameters()).dtype).removeprefix("torch.")
+        if device.type != "cuda":
+            return f"{device}, {dtype}"
+        free, total = torch.cuda.mem_get_info(device)
+        name = torch.cuda.get_device_name(device)
+        return (
+            f"{device}, {dtype}, {name}; free VRAM after loading "
+            f"{free / 2**30:.1f} of {total / 2**30:.1f} GiB"
+        )
 
     def rerank(self, query: str, hits: list[Hit], top_k: int) -> list[Hit]:
         if not hits:
